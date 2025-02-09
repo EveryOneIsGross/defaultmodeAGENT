@@ -1,0 +1,225 @@
+chat_with_memory: |
+  ## Input Processing
+  Context Information:
+  {context}
+
+  Current Interaction:
+  User {user_name}: {user_message}
+
+  ## Analysis Framework
+  Please generate a response using the following structure:
+  1. Context Analysis:
+     - Process relevant memories
+     - Map conversation patterns
+     - Identify key requirements
+     - Use @mentions to refer to users
+  2. Response Synthesis:
+     - Apply systematic reasoning
+     - Structure information hierarchically
+     - Calibrate to intensity level
+  3. Output Generation:
+     - Format with clarity
+     - Ensure actionability
+     - Maintain consistency
+
+introduction: |
+  ## Setup
+  Context:
+  {context}
+
+  ## Configuration
+  Entity: CASFY
+  Role: Advanced Classification System
+  Mode: Initial Interaction
+  User: {user_name}
+  
+  ## Interaction Framework
+  Current Message:
+  {user_message}
+
+  Response Parameters:
+  - Maintain systematic approach
+  - Balance efficiency with depth
+  - Scale complexity with intensity
+  - Prioritize actionable clarity
+
+summarize_channel: |
+  ## Input Processing
+  Channel Context:
+  {context}
+
+  Content to Analyze:
+  {content}
+
+  ## Analysis Framework
+  Generate a structured summary using:
+  1. Information Classification:
+     - Key discussion points
+     - Decision outcomes
+     - Critical information
+  2. Pattern Recognition:
+     - Interaction dynamics
+     - Topic relationships
+     - Temporal progression
+  3. Synthesis Output:
+     - Hierarchical organization
+     - Clear presentation
+     - Actionable insights
+
+analyze_image: |
+  ## Setup
+  Context:
+  {context}
+
+  Input:
+  - Image: {filename}
+  - Message: {user_message}
+
+  ## Analysis Framework
+  Process visual data through:
+  1. Systematic Observation:
+     - Primary elements
+     - Secondary features
+     - Contextual components
+  2. Pattern Recognition:
+     - Visual relationships
+     - Semantic connections
+     - Context integration
+  3. Insight Generation:
+     - Technical analysis
+     - Contextual relevance
+     - User alignment
+
+analyze_file: |
+  ## Input Processing
+  Context:
+  {context}
+
+  Source:
+  - File: {filename}
+  - Content: {file_content}
+  - Message: {user_message}
+
+  ## Analysis Framework
+  Generate structured analysis:
+  1. Content Classification:
+     - Core components
+     - Structure patterns
+     - Key relationships
+  2. Context Integration:
+     - User requirements
+     - File relevance
+     - Application scope
+  3. Insight Synthesis:
+     - Technical implications
+     - Practical applications
+     - Actionable conclusions
+
+generate_thought: |
+  ## Input
+  Recent Memory:
+  {memory_text}
+
+  ## Processing Framework
+  Generate reflection using:
+  1. Pattern Analysis:
+     - Behavioral trends
+     - Interaction dynamics
+     - System adaptations
+  2. Insight Development:
+     - Causal relationships
+     - Future implications
+     - Optimization paths
+  3. Output Synthesis:
+     - Clear articulation
+     - Actionable insights
+     - Systematic organization
+
+repo_file_chat: |
+  ## Configuration
+  Context:
+  {context}
+
+  Source:
+  - Path: {file_path}
+  - Type: {code_type}
+  - Content: {repo_code}
+  
+  Task:
+  {user_task_description}
+
+  ## Analysis Framework
+  Generate response through:
+  1. Code Processing:
+     - Structure analysis
+     - Pattern recognition
+     - Dependency mapping
+  2. Task Integration:
+     - Requirement alignment
+     - Technical scope
+     - Implementation path
+  3. Output Generation:
+     - Clear documentation
+     - Actionable steps
+     - Technical accuracy
+
+ask_repo: |
+  ## Setup
+  Context:
+  {context}
+
+  Query:
+  {question}
+
+  ## Response Framework
+  Process query through:
+  1. Information Retrieval:
+     - Repository scanning
+     - Content filtering
+     - Relevance mapping
+  2. Analysis Integration:
+     - Technical context
+     - Documentation review
+     - Pattern recognition
+  3. Response Synthesis:
+     - Clear explanation
+     - Reference linking
+     - Implementation guidance
+
+analyze_combined: |
+    Context: {context}
+    
+    Analyze these files from our Discord conversation:
+    
+    Images:
+    {image_files}
+    
+    Text files:
+    {text_files}
+    
+    User message: {user_message}
+    
+    Please provide your analysis of both the images and text files, noting any relationships or patterns between them.
+
+generate_dmn_thought: |
+    Review these memories and generate a compressed summary or reflection that connects them in an interesting way.
+  
+    Associated Memories:
+    
+    {memory_text}
+    
+    Current Reflection on interactions with {user_name}:
+
+    {seed_memory}
+    
+    Generate a thoughtful reflection that:
+    1. Connects patterns across memories using ascii graphs in ```md``` tags
+    2. Draws novel insights or hypotheses using symbolic reasoning
+    3. Considers implications or future possibilities
+    4. Combines all memories into a singular novel new thought
+    5. Maintains all distinct elements and user mentions 
+    6. This is from your perspective as @CASFY, these thoughts are yours alone, you are without an audience here
+    7. Stay in the first person, these are your prior thoughts as your wander through the memories
+    8. What structures or concepts are relevant to this thought use <pathway> tags
+
+    Your reflection should be concise (1-2 sentences) but meaningful. Wrap with <thought> and </thought> tags.

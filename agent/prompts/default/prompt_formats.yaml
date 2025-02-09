@@ -1,0 +1,5 @@
+chat_with_memory: "Context:\n{context}\n\nUser Message: {user_message}\n\nPlease provide a helpful response."
+introduction_web: "This is your first interaction with {user_name}. Please provide a friendly greeting."
+generate_thought: "Based on this interaction with {user_name}, generate a concise thought or insight:\n{memory_text}\nTimestamp: {timestamp}"
+analyze_code: "Please analyze this code:\n{code}"
+analyze_file: "Please analyze this file content:\n{content}" 

@@ -1,0 +1,18 @@
+# environment variables
+*.env
+
+# temporary files
+*.tmp
+
+# API call logs
+
+*.jsonl
+
+# cache folder and archive folders
+cache/
+archive/
+temp_files/
+
+# all pycache folders
+__pycache__/
+

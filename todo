@@ -1,0 +1,58 @@
+1. default mode needs to be able to use it's own defined model while gracefully switchign api calls to the discord chat api/model
+2. regex around mentions and @ handling from userid to username and channel name need MAJOR refactoring. It's possible I could save the channel user name, role and user id in the same index, will need their own pydantic model defined.
+
+
+# Architectural Coupling:
+```python
+def sanitize_mentions(content: str, mentions: list) -> str:
+    # This function is called throughout the codebase
+    # Memory storage, LLM preprocessing, and response formatting all depend on it
+    # Changes here would cascade through multiple critical systems
+```
+
+# State Dependencies:
+```python
+bot.mentions_enabled = True  # Global state
+# Multiple components check this flag
+# Memory system expects consistent mention format
+# Command system relies on current mention handling
+```
+
+The core challenge is that the mention system has become integral to:
+- Memory context preservation
+- LLM response formatting
+- User interaction history
+- Command processing
+- Background thought generation
+
+A simplified alternative design could have been:
+```python
+class MentionHandler:
+    def to_plain(self, discord_mention: str) -> str:
+        return f"@{get_username(discord_mention)}"
+        
+    def to_discord(self, username: str) -> str:
+        return f"<@{get_user_id(username)}>"
+```
+
+However, unwinding the current implementation would require:
+1. Coordinated updates across multiple subsystems
+2. Migration of existing memory entries
+3. Rewriting core message processing logic
+4. Updating all command handlers
+5. Modifying background processors
+
+Given the system's stability and functional state, the pragmatic approach is to:
+- Document the current behavior thoroughly
+- Add comprehensive error handling
+- Create abstraction layers for new features
+- Implement careful monitoring
+
+
+The complexity serves as a reminder: sometimes the best architectural decision is to respect existing complexity when the cost of simplification outweighs the benefits.
+
+3. move all logging that currently goes to the bot_ file to be defined by a new module that includes all the pydantic models.
+
+4. 
+
+
