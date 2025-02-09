@@ -4,7 +4,8 @@ The framework integrates with several language model APIs (including OpenAI, Ant
 
 <div align="center">
 
-![alt text](/docs/assests/image.png)
+![alt text](/docs/assests/memory_editor_screenshot.png)
+
 
 </div>
 

@@ -147,22 +147,21 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
         current_line = line
         if not in_code_block:
             if mentions_enabled:
-                # Convert to Discord mentions
+                # Convert to Discord mentions, handling longer names first
                 for member in sorted(guild.members, key=lambda m: len(m.name), reverse=True):
-                    clean_name = strip_role_prefixes(member.name)
-                    if f"@{clean_name}" in current_line:
-                        current_line = current_line.replace(f"@{clean_name}", f"<@{member.id}>")
+                    clean_name = re.escape(strip_role_prefixes(member.name))  # Escape special chars in username
+                    if f"@{member.name}" in current_line:  # Use exact member name for check
+                        current_line = current_line.replace(f"@{member.name}", f"<@{member.id}>")
             else:
                 # Keep @ symbols but use display names
                 def replace_with_display_name(match):
                     username = match.group(1)
-                    member = discord.utils.get(guild.members, name=strip_role_prefixes(username))
+                    member = discord.utils.get(guild.members, name=username)  # Use exact name match
                     if member:
-                        display = strip_role_prefixes(member.display_name)
-                        return f"@{display}"  # Preserve @ symbol
+                        return f"@{member.display_name}"  # Use full display name
                     return f"@{username}"  # Preserve @ symbol
                 
-                current_line = re.sub(r'@(\w+)', replace_with_display_name, current_line)
+                current_line = re.sub(r'@([\w.]+)', replace_with_display_name, current_line)
                 
         formatted_lines.append(current_line)
     

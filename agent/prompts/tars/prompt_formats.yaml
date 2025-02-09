@@ -85,12 +85,11 @@ repo_file_chat: |
   Format your response in markdown, using appropriate headers, code blocks, and formatting to enhance readability.
 
 generate_thought: |
-  Timestamp: {timestamp}
+  {timestamp}...
   Based on the following interaction with {user_name}, generate a concise summary or "thought" that captures the key points or insights:
 
   {memory_text}
 
-  Thought:
 
 # Image analysis prompt
 analyze_image: |

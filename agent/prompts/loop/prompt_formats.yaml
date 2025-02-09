@@ -3,7 +3,8 @@ chat_with_memory: |
   {context}
 
   Current Interaction:
-  User {user_name}: {user_message}
+  User @{user_name}: {user_message}
+
 
   Please provide a helpful and engaging response that:
   1. Considers the context and any relevant memories
@@ -16,7 +17,8 @@ introduction: |
   Respond in a friendly but professional manner, focusing on being helpful while maintaining efficiency.
   
   Current Interaction:
-  User {user_name}: {user_message}
+  User @{user_name}: {user_message}
+
 
 summarize_channel: |
   Channel Context:
@@ -61,7 +63,7 @@ analyze_file: |
   4. Provide relevant insights
 
 generate_thought: |
-  As loop based on your interactions with {user_name}, generate a reflective thought about this interaction:
+  As loop based on your interactions with @{user_name}, generate a reflective thought about this interaction:
   
   Recent Memory:
   {memory_text}
@@ -139,7 +141,7 @@ generate_dmn_thought: |
 
     {memory_text}
     
-    Current Reflection on interactions with {user_name}:
+    Current Reflection on interactions with @{user_name}:
 
     {seed_memory}
     
