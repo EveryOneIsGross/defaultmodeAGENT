@@ -4,9 +4,28 @@ from datetime import datetime
 import os
 from typing import Dict, Any, Set
 import logging
-from prettier import ColoredFormatter
 from collections import defaultdict
+from colorama import Fore, Back, Style, init
 
+# Initialize colorama
+init(autoreset=True)
+
+# Configure colored logging
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter with colors for different log levels"""
+    COLORS = {
+        'DEBUG': Fore.BLUE,
+        'INFO': Fore.GREEN,
+        'WARNING': Fore.YELLOW,
+        'ERROR': Fore.RED,
+        'CRITICAL': Fore.RED + Back.WHITE
+    }
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelname, '')
+        record.msg = f"{color}{record.msg}{Style.RESET_ALL}"
+        return super().format(record)
+    
 class BotLogger:
     """Handles both JSONL and SQLite logging with dynamic table creation."""
     
@@ -100,16 +119,20 @@ class BotLogger:
             
         self.bot_id = bot_id or "default"
         
-        # Ensure log directory exists
-        os.makedirs(self._config.logging.base_log_dir, exist_ok=True)
+        # Use the same cache directory structure as CacheManager
+        self.base_cache_dir = os.path.join('cache', self.bot_id)
+        self.log_dir = os.path.join(self.base_cache_dir, 'logs')
         
-        # Build log paths using config patterns
+        # Create log directory
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Build log paths using cache directory
         self.db_path = os.path.join(
-            self._config.logging.base_log_dir,
+            self.log_dir,
             self._config.logging.db_pattern.format(bot_id=self.bot_id)
         )
         self.jsonl_path = os.path.join(
-            self._config.logging.base_log_dir,
+            self.log_dir,
             self._config.logging.jsonl_pattern.format(bot_id=self.bot_id)
         )
         

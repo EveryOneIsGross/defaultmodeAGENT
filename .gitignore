@@ -12,8 +12,11 @@
 # cache folder and archive folders
 cache/
 archive/
+prompt_archive/
 temp_files/
+scratch/
 
 # all pycache folders
 __pycache__/
 
+# 

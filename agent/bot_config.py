@@ -53,6 +53,7 @@ class PersonaConfig(BaseModel):
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
     hippocampus_bandwidth: float = Field(default=0.6)
+    memory_capacity: int = Field(default=16)
 
 class NotionConfig(BaseModel):
     """Notion database configuration"""

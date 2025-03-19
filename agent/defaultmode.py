@@ -9,7 +9,7 @@ import re
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
-from discord_handler import strip_role_prefixes
+from discord_utils import strip_role_prefixes
 from logger import BotLogger
 
 class DMNProcessor:

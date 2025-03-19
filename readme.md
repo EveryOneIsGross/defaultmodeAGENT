@@ -1,4 +1,4 @@
-defaultMODE is a Discord framework for running persistent, self-aware agents. Unlike traditional Discord bots, our defaultMODE framework maintains a continuously updating memory index—similar to the human brain's Default Mode Network—which allows the agents to generate reflective background thoughts and maintain context over long periods. Continually compressing, expanding and pruning to maintain a homeostatic representation of their own sense of self.
+defaultMODE is a Discord framework for running persistent, self-aware co-operative agents. Unlike traditional Discord bots, the defaultMODE framework maintains a continuously updating memory index—similar to the human brain's Default Mode Network—which allows the agents to generate reflective background thoughts and maintain context over long periods. Continually compressing, expanding and pruning to maintain a homeostatic representation of their own sense of self.
 
 The framework integrates with several language model APIs (including OpenAI, Anthropic, Ollama, and vLLM) to process both text and image inputs. It also enables multi-agent interactions through Discord's mention system, allowing agents to communicate, collaborate, and scheme together. This design simulates a collective consciousness where agents not only retain memories and conversational context but also engage in ongoing, dynamic interactions, much like human thought processes and social exchanges. 
 
@@ -30,8 +30,53 @@ The framework integrates with several language model APIs (including OpenAI, Ant
   - Mention handling (ID ↔ username conversion)
   - Dynamic user/agent tagging
   - Multi-agent interaction support
+  - Handles all painful regex, chunking and transforms required for agent consistency
 
-The system maintains context through an inverted index rather than embeddings, using memory weights and n-gram comparisons for semantic relationships. The DMN processor generates background thoughts and adjusts response temperature based on context density, while the amygdala system modulates response creativity from deterministic (0) to highly dynamic (100).
+The system maintains context through an inverted index rather than embeddings, using memory weights and n-gram comparisons for semantic relationships. The DMN processor generates background thoughts and adjusts response temperature based on context density, while the amygdala system modulates response creativity from deterministic (0) to highly dynamic (100). The intelligence is in the selection and the attention, not knowing everything. There is a lot to be tuned here but I have exposed all the `relevent` levers and their corresponding results. 
+
+## Persistence Mechanisms
+
+- **Memory Persistence**
+  - Core component of the agent's "cognitive" system
+  - User memories stored in an indexed file structure that persists between sessions
+  - Contains processed, weighted, and semantically linked experiences
+  - Directly influences agent personality and contextual responses
+  - Undergoes continuous evolution through DMN thought generation
+  - Structured for rapid semantic retrieval during conversations
+
+## Configuration and Utility
+
+- **File Caching**
+  - Technical layer for resource management and performance
+  - Temporary file management for processing images and large files
+  - Automatic cleanup of expired temporary resources
+  - User-specific caching to maintain privacy boundaries
+  - Directory structure organized by bot instance and purpose
+
+- **Configuration Storage**
+  - Framework layer for deployment flexibility and security
+  - YAML-based configuration files for system prompts and formats
+  - Environment variables for sensitive credentials
+  - Bot-specific configuration to support multi-bot deployments
+  - Runtime adjustable parameters (temperature, processing flags)
+
+## Auditing and Monitoring
+
+- **JSONL Logging**
+  - Administrative layer for system operators and developers
+  - All bot interactions are logged to JSONL files with structured event formatting
+  - Contains raw interaction data with consistent timestamp format
+  - Primarily used for debugging, analytics, and compliance auditing
+  - Not accessible to the agent's cognitive processes
+
+- **SQLite Database**
+  - Operational layer for advanced querying and system analysis
+  - Dynamic schema creation based on event types for flexible data modeling
+  - Complements JSONL with indexed search for efficient historical retrieval
+  - Supports statistical analysis and pattern recognition in user engagement
+  - Primarily administrator-facing, not part of agent cognition
+  - Schema versioning ensures backward compatibility during upgrades
+
 
 ```mermaid
 graph TB
@@ -113,8 +158,8 @@ graph TB
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/yourusername/your-discord-agent.git
-   cd your-discord-agent
+   git clone https://github.com/everyoneisgross/defaultmodeAGENT
+   cd defaultmodeAGENT
    ```
 
 2. **Install dependencies:**
@@ -142,7 +187,7 @@ graph TB
 You can start the bot by running:
 
 ```bash
-python your_agent_script.py --api ollama --model hermes3 --bot-name YourBotName
+python agent/discord_bot.py --api ollama --model hermes3 --bot-name grossBOT
 ```
 
 Replace the arguments with your preferred API and bot name as needed.

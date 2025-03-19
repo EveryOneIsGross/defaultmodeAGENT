@@ -6,6 +6,7 @@ from collections import defaultdict, Counter
 from typing import List, Tuple, Optional, Dict, Any
 import string
 import re
+import math
 
 from bot_config import config
 from tokenizer import get_tokenizer, count_tokens
@@ -359,11 +360,10 @@ class UserMemoryIndex:
 
         Args:
             query (str): Search query text
-            k (int, optional): Maximum number of results to return. Defaults to 5.
-            user_id (str, optional): If provided, only search this user's memories.
-            similarity_threshold (float, optional): Threshold for considering memories as duplicates. 
-                Higher values mean more strict duplicate detection. Defaults to 0.85.
-
+            k (int): Maximum number of results to return
+            user_id (str, optional): If provided, only search this user's memories
+            similarity_threshold (float): Threshold for considering memories as duplicates
+            
         Returns:
             list: List of tuples containing (memory_text, relevance_score)
         """
@@ -371,18 +371,26 @@ class UserMemoryIndex:
         query_words = cleaned_query.split()
         memory_scores = Counter()
 
+        # Calculate IDF components once
+        total_memories = len([m for m in self.memories if m is not None])
+        doc_freqs = {word: len(self.inverted_index.get(word, [])) for word in query_words}
+
         # If user_id is provided, only search that user's memories
         if user_id:
             relevant_memory_ids = self.user_memories.get(user_id, [])
         else:
             relevant_memory_ids = range(len(self.memories))
 
-        # Score memories based on word matches
+        # Score memories with IDF weighting
         for word in query_words:
-            for memory_id in self.inverted_index.get(word, []):
-                if memory_id in relevant_memory_ids:
-                    memory_scores[memory_id] += 1
-        
+            if word in self.inverted_index:
+                df = doc_freqs[word]
+                idf = math.log((total_memories - df + 0.5) / (df + 0.5) + 1.0)
+                
+                for memory_id in self.inverted_index[word]:
+                    if memory_id in relevant_memory_ids:
+                        memory_scores[memory_id] += idf
+
         # Normalize scores by memory length
         for memory_id, score in memory_scores.items():
             memory_scores[memory_id] = score / len(self.clean_text(self.memories[memory_id]).split())

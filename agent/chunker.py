@@ -79,6 +79,8 @@ def truncate_middle(text, max_tokens=64):
         keep_chars = (max_tokens * 4) // 2
         return text[:keep_chars] + "..." + text[-keep_chars:]
 
+# This only exists cause local models are rogues, renegades and rule breakers
+
 def clean_response(response: str) -> str:
     """Clean common LLM tokens and artifacts from response text."""
     if not response:

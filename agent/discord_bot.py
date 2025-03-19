@@ -19,7 +19,7 @@ import re
 # from collections import defaultdict, Counter
 
 # Discord Format Handling
-from discord_handler import strip_role_prefixes, sanitize_mentions, format_discord_mentions
+from discord_utils import strip_role_prefixes, sanitize_mentions, format_discord_mentions
 
 # Configuration imports
 from bot_config import (
@@ -72,6 +72,7 @@ ALLOWED_EXTENSIONS = config.files.allowed_extensions
 ALLOWED_IMAGE_EXTENSIONS = config.files.allowed_image_extensions
 DISCORD_BOT_MANAGER_ROLE = config.discord.bot_manager_role
 TICK_RATE = config.system.tick_rate
+MEMORY_CAPACITY = config.persona.memory_capacity
 
 # JSONL logging setup
 def log_to_jsonl(data, bot_id=None):
@@ -210,7 +211,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             # Get initial candidate memories
             candidate_memories = memory_index.search(
                 sanitized_content, 
-                k=15,  # Increase from default 5 to 15 candidate memories
+                k=MEMORY_CAPACITY,  
                 user_id=(user_id if is_dm else None)
             )
             
@@ -222,7 +223,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 relevant_memories = await hippocampus.rerank_memories(
                     query=sanitized_content,
                     memories=candidate_memories,
-                    threshold=HIPPOCAMPUS_BANDWIDTH  # Adjust the bandwidth as needed
+                    threshold=HIPPOCAMPUS_BANDWIDTH - bot.amygdala_response  # Adjust the bandwidth as needed
                 )
             else:
                 relevant_memories = []
@@ -328,7 +329,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 'ai_response': response_content,  # <-- The bot's response is here
                 'system_prompt': system_prompt,
                 'prompt': prompt,
-                'temperature': TEMPERATURE
+                'temperature': bot.amygdala_response/100
             }, bot_id=bot.user.name)
 
     except Exception as e:
@@ -1721,13 +1722,14 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def get_logs(ctx):
         """Download bot logs (Permissions required)."""
         try:
-            # Get the actual log path from config
+            # Use the same cache directory structure
+            log_dir = os.path.join('cache', bot.user.name, 'logs')
             log_path = os.path.join(
-                config.logging.base_log_dir,
+                log_dir,
                 config.logging.jsonl_pattern.format(bot_id=bot.user.name)
             )
             temp_path = os.path.join(
-                config.logging.base_log_dir,
+                log_dir,
                 f'temp_{config.logging.jsonl_pattern.format(bot_id=bot.user.name)}'
             )
             
