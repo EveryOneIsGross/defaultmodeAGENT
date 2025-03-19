@@ -11,9 +11,13 @@ from collections import defaultdict, Counter
 
 from github import Github
 
-from memory import *
+from memory import CacheManager
 
-from bot_config import *
+# Update imports
+from bot_config import config
+
+# Replace FileConfig.allowed_extensions with config.files.allowed_extensions
+ALLOWED_EXTENSIONS = config.files.allowed_extensions
 
 # Global variable for repository processing status
 repo_processing_event = asyncio.Event()

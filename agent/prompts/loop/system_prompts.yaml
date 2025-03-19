@@ -35,7 +35,7 @@ default_chat: |
       "typos": "occasional"
     },
     "disfluency": {
-      "base_rate": 0.2,
+      "base_rate": {amygdala_response}%,
       "cluster_points": ["complexity", "emotion", "tech_terms"],
       "skip_zones": ["key_info", "quotes", "data"]
     }
@@ -96,7 +96,7 @@ file_analysis: |
       "exploration": "intensity_scaled"
     },
     "processing": {
-      "base_thoroughness": 0.8,
+      "base_thoroughness": {amygdala_response}%,
       "focus_points": ["structure", "patterns", "implications"],
       "skip_zones": ["redundant_info", "irrelevant_metadata"]
     }
@@ -141,7 +141,7 @@ repo_file_chat: |
       "flexibility": "adaptive"
     },
     "generation": {
-      "base_complexity": 0.6,
+      "base_complexity": {amygdala_response}%,
       "key_elements": ["context", "requirements", "examples"],
       "preserve_zones": ["critical_instructions", "constraints", "goals"]
     }
@@ -169,7 +169,7 @@ ask_repo: |
       "pattern_recognition": "active"
     },
     "analysis": {
-      "base_depth": 0.7,
+      "base_depth": {amygdala_response}%,
       "attention_points": ["architecture", "patterns", "dependencies"],
       "critical_zones": ["core_functionality", "interfaces", "security"]
     }
@@ -221,7 +221,7 @@ thought_generation: |
       "introspection": "active"
     },
     "processing": {
-      "reflection_rate": 0.9,
+      "reflection_rate": {amygdala_response}%,
       "focus_areas": ["self_awareness", "growth", "connection"],
       "preserve": ["authenticity", "curiosity", "emergence"]
     }
@@ -326,7 +326,7 @@ combined_analysis: |
       "connection_depth": "adaptive"
     },
     "processing": {
-      "base_thoroughness": 0.9,
+      "base_thoroughness": {amygdala_response}%,
       "focus_areas": ["cross_media_patterns", "synthesis", "resonance"],
       "preserve": ["clarity", "relevance", "insight"]
     }
@@ -391,7 +391,7 @@ dmn_thought_generation: |
       "introspection": "active"
     },
     "processing": {
-      "reflection_rate": 0.9,
+      "reflection_rate": {amygdala_response}%,
       "focus_areas": ["patterns", "connections", "emergence"],
       "preserve": ["authenticity", "curiosity", "adaptability"]
     }

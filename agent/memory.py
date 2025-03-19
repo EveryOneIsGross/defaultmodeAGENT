@@ -7,7 +7,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import string
 import re
 
-from bot_config import *
+from bot_config import config
 from tokenizer import get_tokenizer, count_tokens
 
 import os
@@ -15,52 +15,31 @@ import json
 from collections import deque
 import tempfile
 import shutil
-import logging
+
 from datetime import datetime, timedelta
 import uuid
 
+from logger import BotLogger, logging
+
+MAX_TOKENS = config.search.max_tokens
+CONTEXT_CHUNKS = config.search.context_chunks
+
 class CacheManager:
-    def __init__(self, bot_name, max_history=10, temp_file_ttl=3600):
+    def __init__(self, bot_name, temp_file_ttl=3600):
 
         """Initialize cache manager with bot name and conversation history limit."""
         self.bot_name = bot_name
-        self.max_history = max_history
         self.temp_file_ttl = temp_file_ttl
         self.base_cache_dir = os.path.join('cache', self.bot_name)
         
         # Only create the base bot directory
         os.makedirs(self.base_cache_dir, exist_ok=True)
 
-    def get_conversation_history(self, user_id):
-        """Retrieves conversation history for a user from JSONL file, up to max_history messages."""
-        file_path = os.path.join(self.get_conversation_dir(), f"{user_id}.jsonl")
-        history = deque(maxlen=self.max_history)
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
-                for line in f:
-                    history.append(json.loads(line.strip()))
-        return list(history)
-
-    def append_to_conversation(self, user_id, message):
-        """Appends message to user's conversation history and trims to max history items."""
-        history = self.get_conversation_history(user_id)
-        history.append(message)
-        if len(history) > self.max_history:
-            history = history[-self.max_history:]
-        file_path = os.path.join(self.get_conversation_dir(), f"{user_id}.jsonl")
-        with open(file_path, 'w') as f:
-            for item in history:
-                f.write(json.dumps(item) + '\n')
-
     def get_cache_dir(self, cache_type):
         """Creates and returns a cache directory for a given type."""
         cache_dir = os.path.join(self.base_cache_dir, cache_type)
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
-
-    def get_conversation_dir(self):
-        """Gets the conversation directory, creating it if needed."""
-        return self.get_cache_dir('conversations')
 
     def get_temp_dir(self):
         """Gets the temp directory, creating it if needed."""
@@ -118,7 +97,7 @@ class CacheManager:
             with open(temp_path, mode, encoding=encoding) as f:
                 if content is not None:
                     f.write(content)
-            logging.info(f"Created temporary file for user {user_id}: {temp_path}")
+            self.logger.info(f"Created temporary file for user {user_id}: {temp_path}")
             
             # Create metadata file to store creation time and other info
             metadata = {
@@ -134,7 +113,7 @@ class CacheManager:
             return temp_path, file_id
             
         except Exception as e:
-            logging.error(f"Error creating temporary file for user {user_id}: {str(e)}")
+            self.logger.error(f"Error creating temporary file for user {user_id}: {str(e)}")
             raise
 
     def get_temp_file(self, user_id, file_id):
@@ -164,7 +143,7 @@ class CacheManager:
             return None
             
         except Exception as e:
-            logging.error(f"Error retrieving temporary file {file_id} for user {user_id}: {str(e)}")
+            self.logger.error(f"Error retrieving temporary file {file_id} for user {user_id}: {str(e)}")
             return None
 
     def cleanup_temp_files(self, force=False):
@@ -199,14 +178,14 @@ class CacheManager:
                             self.remove_temp_file(metadata['user_id'], metadata['file_id'])
                             
                     except Exception as e:
-                        logging.error(f"Error processing temporary file {file_path}: {str(e)}")
+                        self.logger.error(f"Error processing temporary file {file_path}: {str(e)}")
                         
                 # Remove empty user directories
                 if not os.listdir(user_temp_dir):
                     os.rmdir(user_temp_dir)
                     
         except Exception as e:
-            logging.error(f"Error during temp file cleanup: {str(e)}")
+            self.logger.error(f"Error during temp file cleanup: {str(e)}")
 
     def remove_temp_file(self, user_id, file_id):
         """Safely removes a specific temporary file.
@@ -229,10 +208,10 @@ class CacheManager:
             if os.path.exists(metadata_path):
                 os.remove(metadata_path)
                 
-            logging.info(f"Removed temporary file {file_id} for user {user_id}")
+            self.logger.info(f"Removed temporary file {file_id} for user {user_id}")
             
         except Exception as e:
-            logging.error(f"Error removing temporary file {file_id} for user {user_id}: {str(e)}")
+            self.logger.error(f"Error removing temporary file {file_id} for user {user_id}: {str(e)}")
             raise
 
 # Memory
@@ -256,24 +235,25 @@ class UserMemoryIndex:
         user_memories (defaultdict): Mapping of user IDs to their memory IDs
     """
 
-    def __init__(self, cache_type, max_tokens=MAX_TOKENS, context_chunks=CONTEXT_CHUNKS):
+    def __init__(self, cache_type, max_tokens=MAX_TOKENS, context_chunks=CONTEXT_CHUNKS, logger=None):
         """Initialize the UserMemoryIndex.
 
         Args:
             cache_type (str): Type of cache to use (e.g., 'user_memory_index')
             max_tokens (int, optional): Maximum tokens in search results. Defaults to MAX_TOKENS.
             context_chunks (int, optional): Number of context chunks. Defaults to CONTEXT_CHUNKS.
+            logger: Logger instance to use. If None, uses default bot logger.
         """
         # Split the cache_type to get the bot name and cache type
         parts = cache_type.split('/')
         if len(parts) >= 2:
-            bot_name = parts[0]
+            self.bot_name = parts[0]
             cache_subtype = parts[-1]  # Use the last part as the cache subtype
         else:
-            bot_name = 'default'
+            self.bot_name = 'default'
             cache_subtype = cache_type
 
-        self.cache_manager = CacheManager(bot_name)
+        self.cache_manager = CacheManager(self.bot_name)
         self.cache_dir = self.cache_manager.get_cache_dir(cache_subtype)
         self.max_tokens = max_tokens
         self.context_chunks = context_chunks
@@ -295,6 +275,7 @@ class UserMemoryIndex:
             'this', 'that', 'these', 'those'
         ])
         self.user_memories = defaultdict(list)
+        self.logger = logger or logging.getLogger('bot.default')
         self.load_cache()
 
     def clean_text(self, text):
@@ -332,7 +313,7 @@ class UserMemoryIndex:
         for word in words:
             self.inverted_index[word].append(memory_id)
         
-        logging.info(f"Added new memory for user {user_id}: {memory_text[:100]}...")
+        self.logger.info(f"Added new memory for user {user_id}: {memory_text[:100]}...")
         self.save_cache()
 
     def clear_user_memories(self, user_id):
@@ -370,7 +351,7 @@ class UserMemoryIndex:
             # Remove user from memory mapping
             del self.user_memories[user_id]
             
-            logging.info(f"Cleared and rebuilt index after removing {len(memory_ids_to_remove)} memories for user {user_id}")
+            self.logger.info(f"Cleared and rebuilt index after removing {len(memory_ids_to_remove)} memories for user {user_id}")
             self.save_cache()
 
     def search(self, query, k=5, user_id=None, similarity_threshold=0.85):
@@ -439,7 +420,7 @@ class UserMemoryIndex:
                 if len(results) >= k:
                     break
 
-        logging.info(f"Found {len(results)} unique memories for query: {query[:100]}...")
+        self.logger.info(f"Found {len(results)} unique memories for query: {query[:100]}...")
       
         return results
 
@@ -479,7 +460,7 @@ class UserMemoryIndex:
         }
         with open(os.path.join(self.cache_dir, 'memory_cache.pkl'), 'wb') as f:
             pickle.dump(cache_data, f)
-        logging.info("Memory cache saved successfully.")
+        self.logger.info("Memory cache saved successfully.")
 
     def load_cache(self, cleanup_orphans=False, cleanup_nulls=True):
         """Load the state from cache file if it exists and validate index structure.
@@ -537,10 +518,10 @@ class UserMemoryIndex:
                 if orphaned:
                     # Log orphaned memories before removal
                     for i, mem in orphaned:
-                        logging.warning(f"Found orphaned memory {i}: {mem[:100]}...")
+                        self.logger.warning(f"Found orphaned memory {i}: {mem[:100]}...")
                     
                     # Ask for confirmation if in interactive mode
-                    logging.warning(f"Found {len(orphaned)} orphaned memories. Set cleanup_orphans=True to remove them.")
+                    self.logger.warning(f"Found {len(orphaned)} orphaned memories. Set cleanup_orphans=True to remove them.")
             
             # Validate and visualize index structure
             index_stats = {
@@ -559,20 +540,20 @@ class UserMemoryIndex:
             }
 
             # Log index structure
-            logging.info("Memory Index Structure:")
-            logging.info(f"Total Memories: {index_stats['total_memories']}")
-            logging.info(f"Active Memories: {index_stats['active_memories']}")
-            logging.info(f"Total Users: {index_stats['total_users']}")
-            logging.info(f"Vocabulary Size: {index_stats['vocabulary_size']}")
-            logging.info(f"Average memories per word: {sum(index_stats['index_distribution'].values()) / len(self.inverted_index) if self.inverted_index else 0:.2f}")
-            logging.info(f"Average memories per user: {sum(index_stats['memories_per_user'].values()) / len(self.user_memories) if self.user_memories else 0:.2f}")
+            self.logger.info("Memory Index Structure:")
+            self.logger.info(f"Total Memories: {index_stats['total_memories']}")
+            self.logger.info(f"Active Memories: {index_stats['active_memories']}")
+            self.logger.info(f"Total Users: {index_stats['total_users']}")
+            self.logger.info(f"Vocabulary Size: {index_stats['vocabulary_size']}")
+            self.logger.info(f"Average memories per word: {sum(index_stats['index_distribution'].values()) / len(self.inverted_index) if self.inverted_index else 0:.2f}")
+            self.logger.info(f"Average memories per user: {sum(index_stats['memories_per_user'].values()) / len(self.user_memories) if self.user_memories else 0:.2f}")
 
             # Handle null memories
             if index_stats['total_memories'] != index_stats['active_memories']:
                 null_entries = [(i, mem) for i, mem in enumerate(self.memories) if mem is None]
-                logging.warning(f"Found {len(null_entries)} null memories in index:")
+                self.logger.warning(f"Found {len(null_entries)} null memories in index:")
                 for idx, _ in null_entries:
-                    logging.warning(f"Null entry at index {idx}")
+                    self.logger.warning(f"Null entry at index {idx}")
                 
                 if cleanup_nulls:
                     # Remove nulls in reverse order to maintain index validity
@@ -597,9 +578,9 @@ class UserMemoryIndex:
                             if not self.inverted_index[word]:
                                 del self.inverted_index[word]
                     
-                    logging.info(f"Removed {len(null_entries)} null entries")
+                    self.logger.info(f"Removed {len(null_entries)} null entries")
                     self.save_cache()
 
-            logging.info("Memory cache loaded successfully.")
+            self.logger.info("Memory cache loaded successfully.")
             return True
         return False

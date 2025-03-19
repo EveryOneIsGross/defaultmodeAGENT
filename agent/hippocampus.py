@@ -1,7 +1,7 @@
 from typing import List, Tuple, Optional, Dict
 import numpy as np
 import aiohttp
-import logging
+from logger import logging
 from pydantic import BaseModel, Field
 from api_client import get_embeddings
 
@@ -24,16 +24,17 @@ class EmbeddingConfig(BaseModel):
         description="Expected embedding dimensions"
     )
 
-class HypocampusConfig(BaseModel):
-    """Pydantic model for Hypocampus configuration - provides vector embeddings for downstream search."""
+class HippocampusConfig(BaseModel):
+    """Pydantic model for Hippocampus configuration - provides vector embeddings for downstream search."""
     embedding_provider: str = Field(default='ollama', description="Provider for embedding service")
     embedding_model: str = Field(default='nomic-embed-text', description="Model to use for embeddings")
 
-class Hypocampus:
-    def __init__(self, config: HypocampusConfig):
+class Hippocampus:
+    def __init__(self, config: HippocampusConfig, logger=None):
         self.config = config
         self._embedding_cache: Dict[str, np.ndarray] = {}
         self.embedding_config = EmbeddingConfig()
+        self.logger = logger or logging.getLogger('bot.default')
         
     async def _get_ollama_embedding(self, text: str) -> Optional[np.ndarray]:
         """Get embeddings specifically from Ollama API."""
@@ -51,6 +52,7 @@ class Hypocampus:
                 ) as response:
                     if response.status != 200:
                         error_text = await response.text()
+                        self.logger.error(f"Ollama API returned status {response.status}: {error_text}")
                         raise Exception(f"Ollama API returned status {response.status}: {error_text}")
                     
                     result = await response.json()
@@ -66,7 +68,7 @@ class Hypocampus:
                     return embedding
                     
             except Exception as e:
-                logging.error(f"Ollama embedding error: {str(e)}")
+                self.logger.error(f"Ollama embedding error: {str(e)}")
                 return None
 
     async def _get_embedding(self, text: str) -> Optional[np.ndarray]:
@@ -90,7 +92,7 @@ class Hypocampus:
                     self._embedding_cache[text] = embedding
                     
             except Exception as e:
-                logging.error(f"Embedding generation failed: {str(e)}")
+                self.logger.error(f"Embedding generation failed: {str(e)}")
                 return None
                 
         return self._embedding_cache[text] 
@@ -106,33 +108,33 @@ class Hypocampus:
         Returns:
             List of (memory_text, new_score) tuples reranked by vector similarity
         """
-        logging.info(f"Starting reranking for query: {query[:100]}... with {len(memories)} candidate memories")
+        self.logger.info(f"Starting reranking for query: {query[:100]}... with {len(memories)} candidate memories")
         
         query_embedding = await self._get_embedding(query)
         if query_embedding is None:
-            logging.error("Failed to generate query embedding")
+            self.logger.error("Failed to generate query embedding")
             return []
             
-        logging.info(f"Generated query embedding with shape: {query_embedding.shape}")
+        self.logger.info(f"Generated query embedding with shape: {query_embedding.shape}")
         
         reranked = []
         for memory_text, initial_score in memories:
-            logging.debug(f"Processing memory (initial score {initial_score:.3f}): {memory_text[:100]}...")
+            self.logger.debug(f"Processing memory (initial score {initial_score:.3f}): {memory_text[:100]}...")
             memory_embedding = await self._get_embedding(memory_text)
             
             if memory_embedding is not None:
                 similarity = np.dot(query_embedding, memory_embedding)
-                logging.debug(f"Memory embedding shape: {memory_embedding.shape}, Cosine similarity: {similarity:.3f}")
+                self.logger.debug(f"Memory embedding shape: {memory_embedding.shape}, Cosine similarity: {similarity:.3f}")
                 
                 if similarity >= threshold:
                     reranked.append((memory_text, float(similarity)))
-                    logging.info(f"Memory accepted - Initial: {initial_score:.3f}, New: {similarity:.3f}")
+                    self.logger.info(f"Memory accepted - Initial: {initial_score:.3f}, New: {similarity:.3f}")
                 else:
-                    logging.debug(f"Memory rejected - similarity {similarity:.3f} below threshold {threshold}")
+                    self.logger.debug(f"Memory rejected - similarity {similarity:.3f} below threshold {threshold}")
             else:
-                logging.warning(f"Failed to generate embedding for memory: {memory_text[:100]}...")
+                self.logger.warning(f"Failed to generate embedding for memory: {memory_text[:100]}...")
                     
         # Sort by new similarity scores
         reranked.sort(key=lambda x: x[1], reverse=True)
-        logging.info(f"Reranking complete - {len(reranked)}/{len(memories)} memories above threshold")
+        self.logger.info(f"Reranking complete - {len(reranked)}/{len(memories)} memories above threshold")
         return reranked 

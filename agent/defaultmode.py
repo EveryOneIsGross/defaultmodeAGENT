@@ -8,22 +8,9 @@ import json
 import re
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
-from prettier import ColoredFormatter
 from fuzzywuzzy import fuzz
-
-# Set up colored logging
-handler = logging.StreamHandler()
-handler.setFormatter(ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s'))
-logging.getLogger().handlers = [handler]
-logging.getLogger().setLevel(logging.INFO)
-
-# Add log_to_jsonl import
-def log_to_jsonl(data, bot_id=None):
-    """Logs data to a bot-specific JSONL file."""
-    log_filename = f'bot_log_{bot_id or "default"}.jsonl'
-    with open(log_filename, 'a') as f:
-        json.dump(data, f)
-        f.write('\n')
+from discord_handler import strip_role_prefixes
+from logger import BotLogger
 
 class DMNProcessor:
     """
@@ -35,7 +22,10 @@ class DMNProcessor:
         self.memory_index = memory_index
         self.prompt_formats = prompt_formats
         self.system_prompts = system_prompts
-        self.bot = bot  # Store bot reference
+        self.bot = bot
+        
+        # Use bot's logger
+        self.logger = bot.logger if hasattr(bot, 'logger') else logging.getLogger('bot.default')
         
         # API inference settings
 
@@ -85,14 +75,14 @@ class DMNProcessor:
         # Set initial mode
         self.set_mode(mode)
         
-        logging.info("DMN Processor initialized")
+        self.logger.info("DMN Processor initialized")
 
     async def start(self):
         """Start the DMN processing loop."""
         if not self.enabled:
             self.enabled = True
             self.task = asyncio.create_task(self._process_loop())
-            logging.info("DMN processing loop started")
+            self.logger.info("DMN processing loop started")
 
     async def stop(self):
         """Stop the DMN processing loop."""
@@ -105,13 +95,13 @@ class DMNProcessor:
                 except asyncio.CancelledError:
                     pass
                 self.task = None
-            logging.info("DMN processing loop stopped")
+            self.logger.info("DMN processing loop stopped")
 
     def set_amygdala_response(self, intensity: int):
         """Update amygdala arousal and temperature scaling."""
         self.amygdala_response = intensity
         self.temperature = intensity / 100.0
-        logging.info(f"Updated amygdala arousal to {intensity} (temperature: {self.temperature})")
+        self.logger.info(f"Updated amygdala arousal to {intensity} (temperature: {self.temperature})")
 
     async def _process_loop(self):
         """Main DMN processing loop."""
@@ -119,7 +109,7 @@ class DMNProcessor:
             try:
                 await self._generate_thought()
             except Exception as e:
-                logging.error(f"Error in DMN thought generation: {str(e)}")
+                self.logger.error(f"Error in DMN thought generation: {str(e)}")
             await asyncio.sleep(self.tick_rate)
 
     def _select_random_memory(self):
@@ -171,16 +161,16 @@ class DMNProcessor:
             
             try:
                 user = await self.bot.fetch_user(int(user_id))
-                user_name = user.name if user else "Unknown User"
+                user_name = strip_role_prefixes(user.name) if user else "Unknown User"
             except Exception as e:
-                logging.error(f"Failed to fetch username for {user_id}: {str(e)}")
+                self.logger.error(f"Failed to fetch username for {user_id}: {str(e)}")
                 user_name = "Unknown User"
             
             # Query related memories
             related_memories = self.memory_index.search(
                 seed_memory,
                 user_id=user_id,
-                k=self.top_k  # Get top 5 memories
+                k=self.top_k
             )
             
             # Filter out the seed memory from results
@@ -193,20 +183,20 @@ class DMNProcessor:
             if related_memories:
                 break
                 
-            logging.info(f"Attempt {attempt + 1}: No related memories found, trying another seed memory")
+            self.logger.info(f"Attempt {attempt + 1}: No related memories found, trying another seed memory")
             if attempt == max_retries - 1:
-                logging.info("Max retries reached without finding any memories")
+                self.logger.info("Max retries reached without finding any memories")
                 return
 
         # Log DMN process start
-        log_to_jsonl({
+        self.logger.log({
             'event': 'dmn_process_start',
             'timestamp': datetime.now().isoformat(),
             'user_id': user_id,
             'user_name': user_name,
             'seed_memory': seed_memory,
             'related_memories_count': len(related_memories)
-        }, bot_id=self.bot.user.name)
+        })
 
         # Build memory context using ALL related memories
         memory_context = f"Considering {len(related_memories)} thoughts:\n\n"
@@ -218,7 +208,7 @@ class DMNProcessor:
                 parsed_memory = re.sub(timestamp_pattern, 
                     lambda m: f"({self.temporal_parser.get_temporal_expression(datetime.strptime(f'{m.group(1)}:{m.group(2)} {m.group(3)}', '%H:%M %d/%m/%y')).base_expression})", 
                     memory)
-                memory_context += f"'{parsed_memory}'[Weight: {score:.2f}]\n\n"
+                memory_context += f"{parsed_memory} [Weight: {score:.2f}]\n\n"
         else:
             memory_context += "Hmmm... nothing comes to mind.\n"
 
@@ -227,9 +217,9 @@ class DMNProcessor:
         for memory, score in related_memories:
             # Apply fuzzy matching to memory content
             content_ratio = fuzz.token_sort_ratio(seed_memory, memory)
-            if content_ratio >= self.fuzzy_overlap_threshold or score >= self.combination_threshold:  # Allow either fuzzy or semantic match
+            if content_ratio >= self.fuzzy_overlap_threshold or score >= self.combination_threshold:
                 similar_memories.append((memory, max(score, content_ratio/100.0)))
-                logging.info(f"Memory matched with fuzzy ratio: {content_ratio}%, semantic score: {score:.2f}")
+                self.logger.info(f"Memory matched with fuzzy ratio: {content_ratio}%, semantic score: {score:.2f}")
 
         # Process overlapping terms if we have high-similarity memories
         if similar_memories:
@@ -237,14 +227,14 @@ class DMNProcessor:
             similar_memories.sort(key=lambda x: x[1], reverse=True)
 
             # Log memory processing
-            log_to_jsonl({
+            self.logger.log({
                 'event': 'dmn_memory_processing',
                 'timestamp': datetime.now().isoformat(),
                 'user_id': user_id,
                 'similar_memories_count': len(similar_memories),
                 'combination_threshold': self.combination_threshold,
                 'memory_context': memory_context
-            }, bot_id=self.bot.user.name)
+            })
 
             # Get memory IDs for memories we'll use
             seed_memory_id = self.memory_index.memories.index(seed_memory)
@@ -286,10 +276,10 @@ class DMNProcessor:
                                 overlapping_terms.add(term)
 
             if overlapping_terms or fuzzy_matches:
-                logging.info(f"Found {len(overlapping_terms)} exact overlapping terms")
-                logging.info(f"Found {len(fuzzy_matches)} fuzzy term matches")
+                self.logger.info(f"Found {len(overlapping_terms)} exact overlapping terms")
+                self.logger.info(f"Found {len(fuzzy_matches)} fuzzy term matches")
                 for seed_term, matches in fuzzy_matches.items():
-                    logging.info(f"Fuzzy matches for '{seed_term}': {', '.join(matches)}")
+                    self.logger.info(f"Fuzzy matches for '{seed_term}': {', '.join(matches)}")
                 
                 # Remove overlapping terms from results (preserve in seed)
                 affected_memories = []
@@ -298,8 +288,8 @@ class DMNProcessor:
                     remaining_terms = memory_terms_map[memory_id] - overlapping_terms
                     if terms_removed:
                         affected_memories.append((memory, terms_removed))
-                        logging.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
-                        logging.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
+                        self.logger.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
+                        self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
                         
                         # Update inverted index directly
                         for term in terms_removed:
@@ -311,7 +301,7 @@ class DMNProcessor:
                                 # Clean up empty terms
                                 if not self.memory_index.inverted_index[term]:
                                     del self.memory_index.inverted_index[term]
-                                    logging.info(f"Removed empty term entry: {term}")
+                                    self.logger.info(f"Removed empty term entry: {term}")
 
                 # Update memory weights for affected results
                 for memory, memory_id in top_memories[1:]:  # Skip seed memory
@@ -321,12 +311,12 @@ class DMNProcessor:
                         decay = removed_terms / len(original_terms)
                         # Use user-specific weight decay
                         self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
-                        logging.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
+                        self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
 
                 # Save the updated index
 
                 #self.memory_index.save_cache()
-                logging.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
+                self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
                 
                 # Add cleanup here after pruning
                 # self._cleanup_disconnected_memories()
@@ -360,7 +350,7 @@ class DMNProcessor:
         # Update global API temperature through bot's update_temperature function
         update_api_temperature(new_intensity)
         
-        logging.info(f"Updated global amygdala arousal to {new_intensity} based on memory density")
+        self.logger.info(f"Updated global amygdala arousal to {new_intensity} based on memory density")
 
         system_prompt = self.system_prompts['dmn_thought_generation'].replace(
             '{amygdala_response}',
@@ -377,7 +367,6 @@ class DMNProcessor:
                 temperature=self.temperature
             )
             
-            # Use existing clean_response function
             new_thought = clean_response(new_thought)
             
             # Gather unique users from related memories
@@ -408,7 +397,7 @@ class DMNProcessor:
             self._cleanup_disconnected_memories()
             
             # Log successful thought generation
-            log_to_jsonl({
+            self.logger.log({
                 'event': 'dmn_thought_generated',
                 'timestamp': datetime.now().isoformat(),
                 'user_id': user_id,
@@ -419,20 +408,20 @@ class DMNProcessor:
                 'generated_thought': new_thought,
                 'amygdala_response': self.amygdala_response,
                 'temperature': self.temperature
-            }, bot_id=self.bot.user.name)
+            })
             
         except Exception as e:
             error_msg = f"Failed to generate DMN thought: {str(e)}"
-            logging.error(error_msg)
+            self.logger.error(error_msg)
             
             # Log error in thought generation
-            log_to_jsonl({
+            self.logger.log({
                 'event': 'dmn_thought_error',
                 'timestamp': datetime.now().isoformat(),
                 'user_id': user_id,
                 'user_name': user_name,
                 'error': str(e)
-            }, bot_id=self.bot.user.name)
+            })
 
     def _cleanup_disconnected_memories(self):
         """Remove memories that have no keyword associations in the inverted index."""
@@ -477,7 +466,7 @@ class DMNProcessor:
                     del self.memory_index.user_memories[user_id]
                 
                 # print the disconnected memories
-                logging.info(f"Cleaned up {len(disconnected)} disconnected memories for user {user_id}")
+                self.logger.info(f"Cleaned up {len(disconnected)} disconnected memories for user {user_id}")
                 
                 #format the disconnected memories for logging
                 disconnected_memories = [self.memory_index.memories[mid] for mid in disconnected]
@@ -486,15 +475,15 @@ class DMNProcessor:
                 self.memory_index.save_cache()
                 
                 # print the disconnected memories
-                logging.info(f"Disconnected memories: {disconnected_memories}")
+                self.logger.info(f"Disconnected memories: {disconnected_memories}")
 
                 # Log the cleanup event
-                log_to_jsonl({
+                self.logger.log({
                     'event': 'dmn_memory_cleanup',
                     'timestamp': datetime.now().isoformat(),
                     'user_id': user_id,
                     'disconnected_memories': disconnected_memories
-                }, bot_id=self.bot.user.name)
+                })
 
     def set_mode(self, mode):
         """Update DMN parameters based on mode."""

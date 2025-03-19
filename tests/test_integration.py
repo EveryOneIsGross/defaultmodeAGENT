@@ -1,11 +1,11 @@
 import pytest
-from agent.hypocampus import Hypocampus, HypocampusConfig
+from agent.hippocampus import Hippocampus, HippocampusConfig
 
 @pytest.mark.asyncio
-async def test_default_hypocampus_workflow():
+async def test_default_hippocampus_workflow():
     # Initialize with default settings
-    config = HypocampusConfig()
-    hypocampus = Hypocampus(config)
+    config = HippocampusConfig()
+    hippocampus = Hippocampus(config)
     
     # Test texts
     texts = [
@@ -16,7 +16,7 @@ async def test_default_hypocampus_workflow():
     # Get embeddings for both texts
     embeddings = []
     for text in texts:
-        embedding = await hypocampus._get_embedding(text)
+        embedding = await hippocampus._get_embedding(text)
         assert embedding is not None
         embeddings.append(embedding)
     

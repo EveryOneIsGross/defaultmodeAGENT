@@ -16,7 +16,7 @@ The framework integrates with several language model APIs (including OpenAI, Ant
   - Adaptive memory pruning based on relevance weights
   - Background thought generation via DMN processor
   - Temporal context parsing for natural time expressions
-  - At inference hypocampus reranking using embeddings 
+  - At inference hippocampus reranking using embeddings 
 
 - **LLM Integration**
   - Multi-provider support (OpenAI, Anthropic, Ollama, vLLM)

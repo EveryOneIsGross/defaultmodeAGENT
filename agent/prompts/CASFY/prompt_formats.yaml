@@ -4,7 +4,7 @@ chat_with_memory: |
   {context}
 
   Current Interaction:
-  User {user_name}: {user_message}
+  User @{user_name}: {user_message}
 
   ## Analysis Framework
   Please generate a response using the following structure:
@@ -31,7 +31,7 @@ introduction: |
   Entity: CASFY
   Role: Advanced Classification System
   Mode: Initial Interaction
-  User: {user_name}
+  User: @@{user_name}
   
   ## Interaction Framework
   Current Message:
@@ -208,7 +208,7 @@ generate_dmn_thought: |
     
     {memory_text}
     
-    Current Reflection on interactions with {user_name}:
+    Current Reflection on interactions with @{user_name}:
 
     {seed_memory}
     

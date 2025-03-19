@@ -1,26 +1,26 @@
 import unittest
 import asyncio
 import numpy as np
-from agent.hypocampus import Hypocampus, HypocampusConfig, EmbeddingConfig
+from agent.hippocampus import Hippocampus, HippocampusConfig, EmbeddingConfig
 
-class TestHypocampus(unittest.IsolatedAsyncioTestCase):
+class TestHippocampus(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.config = HypocampusConfig()
-        self.hypocampus = Hypocampus(self.config)
+        self.config = HippocampusConfig()
+        self.hippocampus = Hippocampus(self.config)
 
     async def test_embedding_dimensions(self):
         text = "Test embedding dimensions"
-        embedding = await self.hypocampus._get_embedding(text)
+        embedding = await self.hippocampus._get_embedding(text)
         self.assertIsNotNone(embedding)
-        self.assertEqual(embedding.shape[0], self.hypocampus.embedding_config.dimensions)
+        self.assertEqual(embedding.shape[0], self.hippocampus.embedding_config.dimensions)
         self.assertTrue(np.isclose(np.linalg.norm(embedding), 1.0))
 
     async def test_embedding_cache(self):
         text = "Test caching behavior"
         # First call should compute embedding
-        embedding1 = await self.hypocampus._get_embedding(text)
+        embedding1 = await self.hippocampus._get_embedding(text)
         # Second call should return cached value
-        embedding2 = await self.hypocampus._get_embedding(text)
+        embedding2 = await self.hippocampus._get_embedding(text)
         self.assertTrue(np.array_equal(embedding1, embedding2))
 
     async def test_vector_similarity(self):
@@ -28,9 +28,9 @@ class TestHypocampus(unittest.IsolatedAsyncioTestCase):
         text2 = "A feline rested on a rug"
         text3 = "Python is a programming language"
         
-        emb1 = await self.hypocampus._get_embedding(text1)
-        emb2 = await self.hypocampus._get_embedding(text2)
-        emb3 = await self.hypocampus._get_embedding(text3)
+        emb1 = await self.hippocampus._get_embedding(text1)
+        emb2 = await self.hippocampus._get_embedding(text2)
+        emb3 = await self.hippocampus._get_embedding(text3)
         
         # Similar texts should have higher cosine similarity
         sim_1_2 = np.dot(emb1, emb2)

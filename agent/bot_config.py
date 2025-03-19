@@ -1,84 +1,103 @@
 import os
 from dotenv import load_dotenv
-from prettier import ColoredFormatter
-import logging
+from pydantic import BaseModel, Field
+from typing import Set, Dict
+from logger import BotLogger
+from datetime import datetime
 
 # Force reload of .env file
 if os.path.exists('.env'):
     load_dotenv(override=True)
 
-# Configure logging first
-handler = logging.StreamHandler()
-handler.setFormatter(ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s'))
-logging.getLogger().handlers = [handler]
-logging.getLogger().setLevel(os.getenv('LOGLEVEL', 'INFO'))
+class LogConfig(BaseModel):
+    """Logging configuration and paths"""
+    base_log_dir: str = Field(default="logs")  # Simple flat directory
+    jsonl_pattern: str = Field(default="bot_log_{bot_id}.jsonl")
+    db_pattern: str = Field(default="bot_log_{bot_id}.db")
+    log_level: str = Field(default=os.getenv('LOGLEVEL', 'INFO'))
+    log_format: str = Field(default='%(asctime)s - %(levelname)s - %(message)s')
 
-# Bot configuration
-TOKEN = os.getenv('DISCORD_TOKEN')
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
-REPO_NAME = os.getenv('GITHUB_REPO')
+class APIConfig(BaseModel):
+    """API authentication and endpoint configurations"""
+    discord_token: str = Field(default=os.getenv('DISCORD_TOKEN'))
+    github_token: str = Field(default=os.getenv('GITHUB_TOKEN'))
+    github_repo: str = Field(default=os.getenv('GITHUB_REPO'))
+    notion_api_key: str = Field(default=os.getenv('NOTION_API_KEY'))
+    ollama_api_base: str = Field(default=os.getenv('OLLAMA_API_BASE', 'http://localhost:11434'))
+    ollama_model: str = Field(default=os.getenv('OLLAMA_MODEL'))
 
-OLLAMA_API_BASE = os.getenv('OLLAMA_API_BASE', 'http://localhost:11434')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL')
+class DiscordConfig(BaseModel):
+    """Discord-specific configuration"""
+    channel_id: str = Field(default=os.getenv('DISCORD_CHANNEL_ID'))
+    bot_manager_role: str = Field(default='Developer')
 
-# Discord configuration
-DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
-DISCORD_BOT_MANAGER_ROLE = 'Developer'
+class FileConfig(BaseModel):
+    """File handling configuration"""
+    allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
+    allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
 
+class SearchConfig(BaseModel):
+    """Search and indexing configuration"""
+    max_tokens: int = Field(default=1000)
+    context_chunks: int = Field(default=4)
+    chunk_percentage: int = Field(default=10)
 
-# File extensions
-ALLOWED_EXTENSIONS = {'.py', '.js', '.html', '.css', '.json', '.md', '.txt'}
+class ConversationConfig(BaseModel):
+    """Conversation handling configuration"""
+    max_history: int = Field(default=8)
+    truncation_length: int = Field(default=256)
+    harsh_truncation_length: int = Field(default=64)
 
-# Add allowed image types
-ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
+class PersonaConfig(BaseModel):
+    """Persona and response configuration"""
+    default_amygdala_response: int = Field(default=70)
+    temperature: float = Field(default_factory=lambda: 70/100.0)
+    hippocampus_bandwidth: float = Field(default=0.6)
 
+class NotionConfig(BaseModel):
+    """Notion database configuration"""
+    calendar_db_id: str = Field(default=os.getenv('CALENDAR_DB_ID'))
+    projects_db_id: str = Field(default=os.getenv('PROJECTS_DB_ID'))
+    tasks_db_id: str = Field(default=os.getenv('TASKS_DB_ID'))
+    kanban_db_id: str = Field(default=os.getenv('KANBAN_DB_ID'))
 
-# Inverted Index Search configuration
-MAX_TOKENS = 1000
-CONTEXT_CHUNKS = 4
-CHUNK_PERCENTAGE = 10
+class TwitterConfig(BaseModel):
+    """Twitter API and limits configuration"""
+    username: str = Field(default=os.getenv('TWITTER_USERNAME'))
+    api_key: str = Field(default=os.getenv('TWITTER_API_KEY'))
+    api_secret: str = Field(default=os.getenv('TWITTER_API_SECRET'))
+    access_token: str = Field(default=os.getenv('TWITTER_ACCESS_TOKEN'))
+    access_secret: str = Field(default=os.getenv('TWITTER_ACCESS_SECRET'))
+    bearer_token: str = Field(default=os.getenv('TWITTER_BEARER_TOKEN'))
+    char_limit: int = Field(default=280)
+    media_limit: int = Field(default=4)
+    gif_limit: int = Field(default=1)
+    video_limit: int = Field(default=1)
+    reply_depth_limit: int = Field(default=25)
+    tweet_rate_limit: int = Field(default=300)
+    dm_rate_limit: int = Field(default=1000)
 
-# Conversation history
-MAX_CONVERSATION_HISTORY = 5
-TRUNCATION_LENGTH = 256
-HARSH_TRUNCATION_LENGTH = 64
+class SystemConfig(BaseModel):
+    """System-wide configuration"""
+    poll_interval: int = Field(default=int(os.getenv('POLL_INTERVAL', 120)))
+    tick_rate: int = Field(default=800)
 
-# Persona intensity handling
-DEFAULT_AMYGDALA_RESPONSE = 70
-TEMPERATURE = DEFAULT_AMYGDALA_RESPONSE / 100.0
+class BotConfig(BaseModel):
+    """Main configuration container"""
+    api: APIConfig = Field(default_factory=APIConfig)
+    discord: DiscordConfig = Field(default_factory=DiscordConfig)
+    files: FileConfig = Field(default_factory=FileConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
+    conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    notion: NotionConfig = Field(default_factory=NotionConfig)
+    twitter: TwitterConfig = Field(default_factory=TwitterConfig)
+    system: SystemConfig = Field(default_factory=SystemConfig)
+    logging: LogConfig = Field(default_factory=LogConfig)
 
-# Notion configuration
-NOTION_API_KEY = os.getenv('NOTION_API_KEY')
-CALENDAR_DB_ID = os.getenv('CALENDAR_DB_ID')
-PROJECTS_DB_ID = os.getenv('PROJECTS_DB_ID')
-TASKS_DB_ID = os.getenv('TASKS_DB_ID')
-KANBAN_DB_ID = os.getenv('KANBAN_DB_ID')
+# Create global config instance
+config = BotConfig()
 
-# Polling configuration
-POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', 120))
-
-
-###############################################
-# Added for experimental multi-platform support
-
-# Twitter Configuration
-TWITTER_USERNAME = os.getenv('TWITTER_USERNAME')
-TWITTER_API_KEY = os.getenv('TWITTER_API_KEY')
-TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET')
-TWITTER_ACCESS_TOKEN = os.getenv('TWITTER_ACCESS_TOKEN')
-TWITTER_ACCESS_SECRET = os.getenv('TWITTER_ACCESS_SECRET')
-TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN')
-
-# Twitter Limits
-TWITTER_CHAR_LIMIT = 280
-TWITTER_MEDIA_LIMIT = 4
-TWITTER_GIF_LIMIT = 1
-TWITTER_VIDEO_LIMIT = 1
-TWITTER_REPLY_DEPTH_LIMIT = 25  # Maximum thread depth
-
-# Twitter Rate Limits
-TWITTER_TWEET_RATE_LIMIT = 300  # per 3 hours
-TWITTER_DM_RATE_LIMIT = 1000  # per 24 hours
-
-# Tick rate
-TICK_RATE = 800
+def init_logging():
+    """Initialize global logging after config is fully loaded."""
+    BotLogger.setup_global_logging()

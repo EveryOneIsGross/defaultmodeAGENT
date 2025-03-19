@@ -1,3 +1,7 @@
+"""
+api_client has it's own logging to ensure it remains project agnostic.
+"""
+
 import os
 import logging
 import aiohttp
@@ -48,7 +52,7 @@ def initialize_api_client(args):
         api.api_key = os.getenv('ANTHROPIC_API_KEY')
         api.model_name = args.model or os.getenv('ANTHROPIC_MODEL_NAME', 'claude-3-5-sonnet-20241022')
     elif api.api_type == 'vllm':
-        api.api_base = os.getenv('VLLM_API_BASE', 'http://models.marketagentsai.com:4000')
+        api.api_base = os.getenv('VLLM_API_BASE', 'http://localhost:4000')
         api.model_name = args.model or os.getenv('VLLM_MODEL_NAME', 'hermes-testing/Hermes-3-Pro-RC2-e4')
     else:
         raise ValueError(f"Unsupported API type: {api.api_type}")
@@ -373,7 +377,7 @@ async def get_embeddings(text, provider=None, model=None):
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
-                    "http://62.169.159.179:8080/embed",
+                    "http://localhost:8080/embed",
                     json={
                         "model": embed_model,
                         "inputs": text

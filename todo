@@ -1,3 +1,9 @@
+URGENT:
+
+TEMPERATURE IS NOW MISALIGNED FOR GENMERATE THOUGHTS ANDF PROCESS FILES CAUSING IT TO USE 0.7 AS DEFAULT DESPITE AMGDELYA BEING UPDATED
+
+
+
 1. default mode needs to be able to use it's own defined model while gracefully switchign api calls to the discord chat api/model
 2. regex around mentions and @ handling from userid to username and channel name need MAJOR refactoring. It's possible I could save the channel user name, role and user id in the same index, will need their own pydantic model defined.
 
