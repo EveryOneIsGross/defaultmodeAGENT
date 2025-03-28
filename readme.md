@@ -7,11 +7,11 @@
 
 </div>
 
-```
 `defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user agents exhibit confusion about their role over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into being the 'USER' after one turn.
 
 Managing an agentic prompt context is a dark art. This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
-```
+
+---
 
 **Core Principles and Features: Simplicity, Emergence, and Persistence**
 
