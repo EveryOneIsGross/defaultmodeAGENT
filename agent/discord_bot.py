@@ -162,6 +162,11 @@ async def maintain_typing_state(channel):
         bot.logger.debug(f"Typing state maintenance ended: {str(e)}")
 
 async def process_message(message, memory_index, prompt_formats, system_prompts, github_repo, is_command=False):
+
+    bot.logger.debug(f"Processing message from {message.author.name}")
+    bot.logger.debug(f"Raw content: {message.content}")
+    bot.logger.debug(f"Mentions: {[m.name for m in message.mentions]}")
+
     """Process an incoming Discord message and generate an appropriate response."""
     if not getattr(bot, 'processing_enabled', True):
         await message.channel.send("BBL... ☕")
@@ -248,8 +253,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                         for reaction in msg.reactions:
                             reaction_emoji = str(reaction.emoji)
                             async for user in reaction.users():
-                                user_name = strip_role_prefixes(user.name)
-                                reaction_parts.append(f"@{user_name}: {reaction_emoji}")
+                                reaction_user_name = strip_role_prefixes(user.name)
+                                reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
                             formatted_msg += f" ({' '.join(reaction_parts)})"
@@ -396,8 +401,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 for reaction in msg.reactions:
                     reaction_emoji = str(reaction.emoji)
                     async for user in reaction.users():
-                        user_name = strip_role_prefixes(user.name)
-                        reaction_parts.append(f"@{user_name}: {reaction_emoji}")
+                        reaction_user_name = strip_role_prefixes(user.name)
+                        reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                 
                 if reaction_parts:
                     display_text += f" ({' '.join(reaction_parts)})"
@@ -1400,8 +1405,8 @@ def setup_bot(prompt_path=None, bot_id=None):
                             for reaction in msg.reactions:
                                 reaction_emoji = str(reaction.emoji)
                                 async for user in reaction.users():
-                                    user_name = strip_role_prefixes(user.name)
-                                    reaction_parts.append(f"@{user_name}: {reaction_emoji}")
+                                    reaction_user_name = strip_role_prefixes(user.name)
+                                    reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                             
                             if reaction_parts:
                                 formatted_msg += f" ({' '.join(reaction_parts)})"
@@ -1502,8 +1507,8 @@ def setup_bot(prompt_path=None, bot_id=None):
                         for reaction in msg.reactions:
                             reaction_emoji = str(reaction.emoji)
                             async for user in reaction.users():
-                                user_name = strip_role_prefixes(user.name)
-                                reaction_parts.append(f"@{user_name}: {reaction_emoji}")
+                                reaction_user_name = strip_role_prefixes(user.name)
+                                reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
                             formatted_msg += f" ({' '.join(reaction_parts)})"

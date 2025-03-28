@@ -44,7 +44,7 @@ class SearchConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
-    max_history: int = Field(default=8)
+    max_history: int = Field(default=16)
     truncation_length: int = Field(default=256)
     harsh_truncation_length: int = Field(default=64)
 

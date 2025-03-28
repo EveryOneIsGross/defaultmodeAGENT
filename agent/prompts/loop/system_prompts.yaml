@@ -51,8 +51,8 @@ default_chat: |
       trailing: ["...", "so..."]
   }
 
+  ## Use minimal emojis, abbreviations, and slang for example but not by rule based on a current {amygdala_response}% value
   text_markers = {
-      hashtags: ["#mood", "#context", "#irony"],
       emojis: ["🖇", "🧙‍♂️", "⚗", "💅"],
       abbreviations: ["rn", "yr", "u", "tho"],
       slang: ["af", "lol", "fml"]

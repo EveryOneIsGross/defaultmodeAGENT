@@ -10,3 +10,12 @@
     + So much like my relationships change when I am in a different environment, my body adapts and my mind will learn it's new bounds
 - handle main script termination with a graceful shutdown
 - `agent/memory.py` needs to be refactored to be more efficient and scalable after adding IDF weighting to the memory search
+- kb or user prior ingesting
+    + a way of extracting and preformatting social media/email/archive
+    + then ingesting them into the inverted index for the agent to grok
+
+- image handling automatically resize large images under a threshold value
+
+- the `user_name` is unsafe and being transformed by an async operation causing mentioned users to hijack the index and response causing a Freaky Friday event.
+
+- #channelnames are handled with #102989861208 numerical IDS and also need special handling simialr to mention transforms between channels and agent *sigh*

@@ -82,10 +82,13 @@ class TemporalParser:
         """Determine appropriate timeframe for a datetime"""
         time_diff = self.reference_time - dt
         
-        for threshold, timeframe in self.TIME_BRACKETS.items():
-            if time_diff < threshold:
+        # Sort thresholds from largest to smallest
+        sorted_brackets = sorted(self.TIME_BRACKETS.items(), key=lambda x: x[0], reverse=True)
+        
+        for threshold, timeframe in sorted_brackets:
+            if time_diff >= threshold:
                 return timeframe
-        return TimeFrame.OLDER
+        return TimeFrame.IMMEDIATE  # If smaller than all thresholds
     
     def _get_time_context(self, dt: datetime) -> Optional[str]:
         """Get time-of-day context if within last 24 hours"""

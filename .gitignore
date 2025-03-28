@@ -19,4 +19,14 @@ scratch/
 # all pycache folders
 __pycache__/
 
-# 
+# secret prompts
+agent/prompts/Aithirne
+agent/prompts/Naptha
+agent/prompts/Coireall
+agent/prompts/Eimhin
+agent/prompts/delphi_ma
+agent/prompts/delphi
+agent/prompts/tars_ma
+agent/prompts/tars
+
+

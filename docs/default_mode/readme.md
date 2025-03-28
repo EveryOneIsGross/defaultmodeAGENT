@@ -56,11 +56,6 @@ flowchart TB
     IR --> II
     II --> MI
 
-    style Memory fill:#f9f,stroke:#333,stroke-width:2px
-    style Selection fill:#bbf,stroke:#333,stroke-width:2px
-    style Processing fill:#fbf,stroke:#333,stroke-width:2px
-    style Generation fill:#bfb,stroke:#333,stroke-width:2px
-    style Cleanup fill:#ffb,stroke:#333,stroke-width:2px
 ```
 
 1. **Memory Selection Process**
@@ -175,7 +170,7 @@ term_C -> [mem1, mem4]  # Still shared but less common
 # Each agent maintains its own:
 self.memory_index = memory_index      # Personal experiences
 self.memory_weights = defaultdict()   # Individual associations
-self.persona_intensity = 50           # Unique personality
+self.amgdela_response = 50           # Unique personality
 ```
 
 3. **Inter-Agent Learning**
