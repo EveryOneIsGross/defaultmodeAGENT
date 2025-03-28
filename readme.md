@@ -3,7 +3,7 @@
 
 <div align="center">
 
-![alt text](docs\assests\projectbanner.png)
+![alt text](docs/assests/projectbanner.png)
 
 </div>
 
