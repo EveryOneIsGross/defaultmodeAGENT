@@ -1,5 +1,5 @@
 
-# defaultMODE: Persistent, Emergent Agents via Self-Regulated Memory Refinement
+defaultMODE: Emergent Self-Regulating AI Agents
 
 <div align="center">
 
