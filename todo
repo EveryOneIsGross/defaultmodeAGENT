@@ -19,3 +19,7 @@
 - the `user_name` is unsafe and being transformed by an async operation causing mentioned users to hijack the index and response causing a Freaky Friday event.
 
 - #channelnames are handled with #102989861208 numerical IDS and also need special handling simialr to mention transforms between channels and agent *sigh*
+
+- defaultmode.py needs a context window limit... I'd prefer not to chunk or truncate if possible. only an issue on sub 32k context window limit llms.
+    To ensure information is not lost in the 0 shot compression step. It's up to the agent to capture important details as trimming is aggressive.
+    Because I don't use chunking by default and rely more on truncation and item n limits...

@@ -1,4 +1,3 @@
-
 defaultMODE: Emergent Self-Regulating AI Agents
 
 <div align="center">
