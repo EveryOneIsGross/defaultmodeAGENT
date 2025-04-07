@@ -33,6 +33,9 @@ class CacheManager:
         self.temp_file_ttl = temp_file_ttl
         self.base_cache_dir = os.path.join('cache', self.bot_name)
         
+        # Set up logger
+        self.logger = logging.getLogger(f'bot.{self.bot_name}.cache')
+        
         # Only create the base bot directory
         os.makedirs(self.base_cache_dir, exist_ok=True)
 
@@ -98,7 +101,12 @@ class CacheManager:
             with open(temp_path, mode, encoding=encoding) as f:
                 if content is not None:
                     f.write(content)
-            self.logger.info(f"Created temporary file for user {user_id}: {temp_path}")
+            
+            try:
+                self.logger.info(f"Created temporary file for user {user_id}: {temp_path}")
+            except AttributeError:
+                # Fallback in case logger is not available
+                pass
             
             # Create metadata file to store creation time and other info
             metadata = {
@@ -114,7 +122,11 @@ class CacheManager:
             return temp_path, file_id
             
         except Exception as e:
-            self.logger.error(f"Error creating temporary file for user {user_id}: {str(e)}")
+            try:
+                self.logger.error(f"Error creating temporary file for user {user_id}: {str(e)}")
+            except AttributeError:
+                # Fallback if logger is not available
+                pass
             raise
 
     def get_temp_file(self, user_id, file_id):
@@ -144,7 +156,11 @@ class CacheManager:
             return None
             
         except Exception as e:
-            self.logger.error(f"Error retrieving temporary file {file_id} for user {user_id}: {str(e)}")
+            try:
+                self.logger.error(f"Error retrieving temporary file {file_id} for user {user_id}: {str(e)}")
+            except AttributeError:
+                # Fallback if logger is not available
+                pass
             return None
 
     def cleanup_temp_files(self, force=False):
@@ -154,8 +170,8 @@ class CacheManager:
         
         try:
             # Iterate through user directories
-            for user_id in os.listdir(temp_dir):  # Use temp_dir instead of calling get_temp_dir()
-                user_temp_dir = os.path.join(temp_dir, user_id)  # Use temp_dir instead of calling get_temp_dir()
+            for user_id in os.listdir(temp_dir):
+                user_temp_dir = os.path.join(temp_dir, user_id)
                 if not os.path.isdir(user_temp_dir):
                     continue
                     
@@ -168,25 +184,49 @@ class CacheManager:
                     
                     try:
                         if os.path.exists(metadata_path):
+                            # Use metadata to get file info
                             with open(metadata_path, 'r') as f:
                                 metadata = json.load(f)
                             created_at = datetime.fromisoformat(metadata['created_at'])
                             file_age = current_time - created_at
+                            
+                            if force or file_age > timedelta(seconds=self.temp_file_ttl):
+                                self.remove_temp_file(metadata['user_id'], metadata['file_id'])
                         else:
+                            # If no metadata exists, use file creation time directly
                             file_age = current_time - datetime.fromtimestamp(os.path.getctime(file_path))
                             
-                        if force or file_age > timedelta(seconds=self.temp_file_ttl):
-                            self.remove_temp_file(metadata['user_id'], metadata['file_id'])
+                            if force or file_age > timedelta(seconds=self.temp_file_ttl):
+                                # Direct file removal since we don't have metadata
+                                try:
+                                    os.remove(file_path)
+                                    try:
+                                        self.logger.info(f"Removed orphaned temporary file {filename} for user {user_id}")
+                                    except AttributeError:
+                                        pass
+                                except Exception as e:
+                                    try:
+                                        self.logger.error(f"Error removing orphaned file {file_path}: {str(e)}")
+                                    except AttributeError:
+                                        pass
                             
                     except Exception as e:
-                        self.logger.error(f"Error processing temporary file {file_path}: {str(e)}")
+                        try:
+                            self.logger.error(f"Error processing temporary file {file_path}: {str(e)}")
+                        except AttributeError:
+                            # Fallback if logger is not available
+                            pass
                         
                 # Remove empty user directories
                 if not os.listdir(user_temp_dir):
                     os.rmdir(user_temp_dir)
                     
         except Exception as e:
-            self.logger.error(f"Error during temp file cleanup: {str(e)}")
+            try:
+                self.logger.error(f"Error during temp file cleanup: {str(e)}")
+            except AttributeError:
+                # Fallback if logger is not available
+                pass
 
     def remove_temp_file(self, user_id, file_id):
         """Safely removes a specific temporary file.
@@ -209,11 +249,18 @@ class CacheManager:
             if os.path.exists(metadata_path):
                 os.remove(metadata_path)
                 
-            self.logger.info(f"Removed temporary file {file_id} for user {user_id}")
+            try:
+                self.logger.info(f"Removed temporary file {file_id} for user {user_id}")
+            except AttributeError:
+                # Fallback if logger is not available
+                pass
             
         except Exception as e:
-            self.logger.error(f"Error removing temporary file {file_id} for user {user_id}: {str(e)}")
-            raise
+            try:
+                self.logger.error(f"Error removing temporary file {file_id} for user {user_id}: {str(e)}")
+            except AttributeError:
+                # Fallback if logger is not available
+                pass
 
 # Memory
 

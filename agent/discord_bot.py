@@ -443,7 +443,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
                 # Process file based on type
                 if is_image:
-                    temp_path = f"temp_{attachment.filename}"
                     try:
                         image_data = await attachment.read()
                         bot.logger.info(f"Downloaded image data for {attachment.filename}: {len(image_data)} bytes")
@@ -457,8 +456,14 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                             bot.logger.error(traceback.format_exc())
                             raise ValueError(f"Invalid image data: {str(img_error)}")
 
-                        with open(temp_path, 'wb') as f:
-                            f.write(image_data)
+                        # Use bot's file cache manager to create a temporary file
+                        file_cache = bot.cache_managers['file']
+                        temp_path, file_id = file_cache.create_temp_file(
+                            user_id=user_id,
+                            prefix="img_",
+                            suffix=os.path.splitext(attachment.filename)[1],
+                            content=image_data
+                        )
                         bot.logger.info(f"Saved image to temporary path: {temp_path}")
                         
                         if not os.path.exists(temp_path):
@@ -613,13 +618,19 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         
     finally:
         # Clean up temp files
-        for temp_path in temp_paths:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    bot.logger.info(f"Removed temporary file: {temp_path}")
-            except Exception as e:
-                bot.logger.error(f"Error removing temporary file {temp_path}: {str(e)}")
+        if hasattr(bot, 'cache_managers') and 'file' in bot.cache_managers:
+            # Use cache manager's cleanup mechanism
+            bot.cache_managers['file'].cleanup_temp_files(force=True)
+            bot.logger.info("Cleaned up temporary files using cache manager")
+        else:
+            # Fallback to direct file removal if cache manager isn't available
+            for temp_path in temp_paths:
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                        bot.logger.info(f"Removed temporary file: {temp_path}")
+                except Exception as e:
+                    bot.logger.error(f"Error removing temporary file {temp_path}: {str(e)}")
 
 async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800):
     """
@@ -1161,13 +1172,19 @@ def setup_bot(prompt_path=None, bot_id=None):
             return
 
         try:
-            file_content = await attachment.read()
-            file_content = file_content.decode('utf-8')
-        except UnicodeDecodeError:
-            await ctx.send("Unable to read the file. Please ensure it's a text file.")
-            return
-
-        await process_files(ctx, file_content, attachment.filename, user_memory_index, prompt_formats, system_prompts)
+            # Let process_files handle the content extraction and validation
+            await process_files(
+                message=ctx.message,
+                memory_index=user_memory_index,
+                prompt_formats=prompt_formats,
+                system_prompts=system_prompts,
+                user_message=ctx.message.content,
+                bot=bot
+            )
+        except Exception as e:
+            await ctx.send(f"Error analyzing file: {str(e)}")
+            bot.logger.error(f"Error in analyze_file command: {str(e)}")
+            bot.logger.error(traceback.format_exc())
 
     @bot.command(name='summarize')
     @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
@@ -1289,13 +1306,17 @@ def setup_bot(prompt_path=None, bot_id=None):
                     for file in sorted(indexed_files):
                         file_list += f"- `{file}`\n"
                     
-                    temp_file = 'indexed_files.md'
-                    with open(temp_file, 'w') as f:
-                        f.write(file_list)
+                    # Use cache manager to create the temp file
+                    temp_path, _ = bot.cache_managers['file'].create_temp_file(
+                        user_id=str(ctx.author.id),
+                        prefix="repo_index_",
+                        suffix=".md", 
+                        content=file_list
+                    )
                     
-                    await ctx.send(f"Here's the list of indexed files from the '{branch}' branch:", file=discord.File(temp_file))
+                    await ctx.send(f"Here's the list of indexed files from the '{branch}' branch:", file=discord.File(temp_path))
                     
-                    os.remove(temp_file)
+                    # Cleanup is handled by the cache manager's TTL system
                 else:
                     await ctx.send(f"No files have been indexed yet on the '{branch}' branch.")
             else:
