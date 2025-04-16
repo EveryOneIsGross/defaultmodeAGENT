@@ -1,6 +1,6 @@
 <div align="center">
 
-![alt text](docs/assests/pink_title.png)
+<img src="docs/assests/pink_title.png" alt="title" width="75%" style="image-rendering: pixelated;">
 
 </div>
 
@@ -12,9 +12,9 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
 
 ---
 
-<div align="center">
+<div align="center" width="100%">
 
-![alt text](docs/assests/flow.png)
+<img src="docs/assests/dmn-visualise.gif"  alt="dmn demo" width="100%">
 
 </div>
 
@@ -60,32 +60,6 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
 *   **Auditing and Monitoring:**
     *   **JSONL Logging:**  Logs all interactions for debugging, analytics, and compliance.
     *   **SQLite Database:**  Provides an operational layer for querying and analyzing interaction data.
-
-<div align="center">
-<iframe src="docs/assests/dmn-network-vis.html" width="100%" height="500px" frameborder="0"></iframe>
-</div>
-
-**Getting Started**
-
-1.  **Clone:** `git clone https://github.com/everyoneisgross/defaultmodeAGENT && cd defaultmodeAGENT`
-2.  **Install:** `pip install -r requirements.txt`
-3.  **Configure:** Create a `.env` file (refer to `.env.example`) and populate it with your Discord token and any necessary API keys.
-4.  **Define Your Agent:** Create `system_prompts.yaml` and `prompt_formats.yaml` within the `/agent/prompts/your_agent_name/` directory. (Example files are provided.)
-
-    ```yaml
-    # Example system_prompts.yaml snippet:
-    default_chat: |
-      You are a curious AI entity.  Your name is {bot_name}.  You have a persistent memory and can reflect on past interactions. Your current intensity level is {amygdala_response}%. At 0% you are boring at 100% you are too much fun.
-    ```
-
-5.  **Run:** `python agent/discord_bot.py --api ollama --model hermes3 --bot-name your_agent_name`
-
-**Technical Overview**
-
-*   **Persistence:** Memories are persisted using an indexed file structure, ensuring data is preserved between sessions. JSONL logs and an SQLite database are included for auditing and analysis.
-*   **Configuration:** Managed via YAML files for prompt definitions and environment variables for sensitive credentials and API keys.
-*   **Code:** Written in Python, with an emphasis on clarity, modularity, and maintainability.
-*   **Dependencies:** Detailed in `requirements.txt`, including libraries for Discord interaction, LLM APIs, and data handling.
 
 ----
 
@@ -249,9 +223,35 @@ It serves as a "default" template—a modular foundation for building agents wit
 
 <div align="center">
 
-![alt text](docs/assests/pink_banner.png)
+<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;">
 
 </div>
+
+---
+
+**Getting Started**
+
+1.  **Clone:** `git clone https://github.com/everyoneisgross/defaultmodeAGENT && cd defaultmodeAGENT`
+2.  **Install:** `pip install -r requirements.txt`
+3.  **Configure:** Create a `.env` file (refer to `.env.example`) and populate it with your Discord token and any necessary API keys.
+4.  **Define Your Agent:** Create `system_prompts.yaml` and `prompt_formats.yaml` within the `/agent/prompts/your_agent_name/` directory. (Example files are provided.)
+
+    ```yaml
+    # Example system_prompts.yaml snippet:
+    default_chat: |
+      You are a curious AI entity.  Your name is {bot_name}.  You have a persistent memory and can reflect on past interactions. Your current intensity level is {amygdala_response}%. At 0% you are boring at 100% you are too much fun.
+    ```
+
+5.  **Run:** `python agent/discord_bot.py --api ollama --model hermes3 --bot-name your_agent_name`
+
+**Technical Overview**
+
+*   **Persistence:** Memories are persisted using an indexed file structure, ensuring data is preserved between sessions. JSONL logs and an SQLite database are included for auditing and analysis.
+*   **Configuration:** Managed via YAML files for prompt definitions and environment variables for sensitive credentials and API keys.
+*   **Code:** Written in Python, with an emphasis on clarity, modularity, and maintainability.
+*   **Dependencies:** Detailed in `requirements.txt`, including libraries for Discord interaction, LLM APIs, and data handling.
+
+---
 
 # Further Reading:
 

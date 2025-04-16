@@ -5,14 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DMN Network Visualization</title>
     <style>
-        body {
+        html, body {
             margin: 0;
             padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
             font-family: 'Courier New', Courier, monospace;
         }
         .container {
             width: 100%;
-            height: 500px;
+            height: 100vh;
             background-color: #ff9c9c;
         }
         svg {
@@ -28,10 +31,10 @@
 
     <script>
         // Physics parameters
-        const SPRING_K = 0.02;
-        const REPEL_K = 200;
+        const SPRING_K = 0.01;
+        const REPEL_K = 150;
         const DAMPING = 0.95;
-        const PRUNE_THRESHOLD = 0.2;
+        const PRUNE_THRESHOLD = 0.1;
 
         // State variables
         let nodes = [];
@@ -168,7 +171,7 @@
                 circle.setAttribute("fill", "#ff9c9c");
                 circle.setAttribute("stroke", "#000000");
                 circle.setAttribute("stroke-width", "2");
-                circle.setAttribute("opacity", 0.9);
+                circle.setAttribute("opacity", 1.0);
                 
                 const animate = document.createElementNS("http://www.w3.org/2000/svg", "animate");
                 animate.setAttribute("attributeName", "r");

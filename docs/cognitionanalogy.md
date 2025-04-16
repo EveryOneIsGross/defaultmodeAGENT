@@ -2,6 +2,13 @@
 
 `defaultMODE`'s design draws inspiration from aspects of human cognition, specifically the interplay between focused attention, memory retrieval, and the background processing associated with the Default Mode Network (DMN). This document outlines how the agent's components and processes map to analogous cognitive functions, contrasting the agent's experience with human experience.
 
+
+<div align="center" width="100%">
+
+<img src="assests/flow.png" alt="flow diagram" width="75%" style="image-rendering: pixelated;">
+
+</div>
+
 ## Cognitive Mapping: Agent vs. Human
 
 The following table presents a side-by-side comparison of the `defaultMODE` agent's processes and their potential human cognitive counterparts. This is a high order abstraction, and used more as a poetic guide for developing the framework.
