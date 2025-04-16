@@ -1,0 +1,327 @@
+/* BUTT Magazine Inspired CSS Style Guide */
+
+/* Color Palette */
+:root {
+    --butt-pink: #ff9c9c;        /* Signature salmon pink */
+    --butt-black: #000000;       /* Deep black for text */
+}
+
+/* Base Typography */
+body {
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    font-family: "Courier New", Courier, monospace;
+    font-size: 16px;
+    line-height: 1.4;
+    margin: 0;
+    padding: 20px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+    font-family: "Courier New", Courier, monospace;
+    font-weight: normal;
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+    text-transform: uppercase;
+    color: var(--butt-black);
+}
+
+h1 {
+    font-size: 2rem;
+    letter-spacing: -0.02em;
+}
+
+h2 {
+    font-size: 1.5rem;
+    letter-spacing: -0.01em;
+}
+
+/* Links */
+a {
+    color: var(--butt-black);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    transition: opacity 0.2s ease;
+}
+
+a:hover {
+    opacity: 0.7;
+}
+
+/* Layout Containers */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* Memory Editor Specific Styles */
+.memory-item {
+    background-color: var(--butt-pink);
+    border: 1px solid var(--butt-black);
+    padding: 15px;
+    margin: 10px 0;
+    transition: all 0.3s ease;
+}
+
+.memory-item:hover {
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.memory-text {
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    border: 1px solid var(--butt-black);
+    font-family: "Courier New", Courier, monospace;
+    width: 100%;
+    min-height: 20px;
+    margin: 10px 0;
+    padding: 8px;
+    resize: none;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.memory-text.highlighted {
+    animation: highlightPulse 2s;
+    border-color: var(--butt-black);
+}
+
+/* Buttons */
+.button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+    border: none;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 1rem;
+    padding: 0.5rem 1rem;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+    margin-right: 5px;
+}
+
+.button:hover {
+    opacity: 0.8;
+}
+
+.load-button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+    border: none;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 1rem;
+    padding: 0.5rem 1rem;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+    margin-left: 10px;
+}
+
+.load-button:hover {
+    opacity: 0.8;
+}
+
+.edit-button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+}
+
+.delete-button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+}
+
+.save-button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+}
+
+.visualization-button {
+    background-color: var(--butt-black);
+    color: var(--butt-pink);
+    padding: 8px 15px;
+    border: 2px solid var(--butt-black);
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: "Courier New", Courier, monospace;
+    font-weight: bold;
+    transition: all 0.3s;
+    margin-left: 10px;
+    text-transform: uppercase;
+}
+
+.visualization-button:hover {
+    opacity: 0.8;
+}
+
+.visualization-button.active {
+    background-color: var(--butt-pink);
+    border-color: var(--butt-black);
+}
+
+/* Form Elements */
+input, textarea, select {
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    border: 1px solid var(--butt-black);
+    font-family: "Courier New", Courier, monospace;
+    font-size: 1rem;
+    padding: 0.5em;
+    margin-bottom: 1em;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.bot-select {
+    padding: 8px;
+    margin: 10px 0;
+    width: 200px;
+    font-size: 16px;
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    font-family: "Courier New", Courier, monospace;
+    border: 1px solid var(--butt-black);
+}
+
+/* Keywords */
+.keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 5px 0;
+}
+
+.keyword {
+    background: var(--butt-pink);
+    color: var(--butt-black);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--butt-black);
+}
+
+.weight {
+    background: var(--butt-black);
+    color: var(--butt-pink);
+    border-radius: 50%;
+    padding: 2px 6px;
+    font-size: 0.8em;
+}
+
+/* Status Messages */
+.success {
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    border: 1px solid var(--butt-black);
+    margin: 10px 0;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+.error {
+    background-color: var(--butt-pink);
+    color: var(--butt-black);
+    border: 1px solid var(--butt-black);
+    margin: 10px 0;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+/* Switch */
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 20px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--butt-pink);
+    transition: .4s;
+    border-radius: 20px;
+    border: 1px solid var(--butt-black);
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: var(--butt-black);
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked + .slider {
+    background-color: var(--butt-pink);
+}
+
+input:checked + .slider:before {
+    transform: translateX(20px);
+}
+
+/* Visualization */
+#visualization {
+    background-color: var(--butt-pink);
+    border: 2px solid var(--butt-black);
+    border-radius: 5px;
+    padding: 20px;
+    margin-top: 20px;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
+}
+
+/* Animations */
+@keyframes highlightPulse {
+    0% { background-color: var(--butt-pink); }
+    50% { background-color: var(--butt-pink); opacity: 0.8; }
+    100% { background-color: var(--butt-pink); }
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    body {
+        font-size: 14px;
+    }
+    
+    .container {
+        padding: 1rem;
+    }
+    
+    .memory-item {
+        padding: 10px;
+    }
+    
+    .button {
+        padding: 0.4rem 0.8rem;
+        font-size: 0.9rem;
+    }
+    
+    .visualization-button {
+        padding: 6px 12px;
+        font-size: 0.9rem;
+    }
+}

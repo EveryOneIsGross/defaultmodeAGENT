@@ -79,16 +79,24 @@ class TemporalParser:
         self.reference_time = reference_time or datetime.now()
     
     def _get_timeframe(self, dt: datetime) -> TimeFrame:
-        """Determine appropriate timeframe for a datetime"""
+        """Determine appropriate timeframe for a datetime using clear range checks."""
         time_diff = self.reference_time - dt
-        
-        # Sort thresholds from largest to smallest
-        sorted_brackets = sorted(self.TIME_BRACKETS.items(), key=lambda x: x[0], reverse=True)
-        
-        for threshold, timeframe in sorted_brackets:
-            if time_diff >= threshold:
-                return timeframe
-        return TimeFrame.IMMEDIATE  # If smaller than all thresholds
+
+        # Check ranges from smallest to largest
+        if time_diff < timedelta(minutes=5):
+            return TimeFrame.IMMEDIATE
+        elif time_diff < timedelta(hours=1): # 5 min <= diff < 1 hour
+            return TimeFrame.RECENT
+        elif time_diff < timedelta(days=1): # 1 hour <= diff < 1 day
+            return TimeFrame.TODAY
+        elif time_diff < timedelta(days=2): # 1 day <= diff < 2 days
+            return TimeFrame.YESTERDAY
+        elif time_diff < timedelta(days=7): # 2 days <= diff < 1 week
+            return TimeFrame.THIS_WEEK
+        elif time_diff < timedelta(days=30): # 1 week <= diff < 1 month
+            return TimeFrame.THIS_MONTH
+        else: # diff >= 30 days
+            return TimeFrame.OLDER
     
     def _get_time_context(self, dt: datetime) -> Optional[str]:
         """Get time-of-day context if within last 24 hours"""
@@ -140,8 +148,11 @@ class TemporalParser:
             weeks = time_diff.days // 7
             expression = pattern.format(weeks) if "{}" in pattern else pattern
         else:
-            if time_diff.days > 365:
-                expression = pattern.format(time_diff.days // 365) if "{}" in pattern else pattern
+            if time_diff.days >= 365:
+                years = time_diff.days / 365
+                # Round to nearest integer to avoid incorrect year display
+                rounded_years = round(years)
+                expression = pattern.format(rounded_years) if "{}" in pattern else pattern
             elif time_diff.days > 30:
                 expression = pattern.format(time_diff.days // 30) if "{}" in pattern else pattern
             else:

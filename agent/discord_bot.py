@@ -196,13 +196,15 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 original_content = original.content.strip()
                 if original_content:
                     # Sanitize the original message content with its own mentions
-                    sanitized_original = sanitize_mentions(original_content, original.mentions)
+                    combined_mentions = list(original.mentions) + list(original.channel_mentions)
+                    sanitized_original = sanitize_mentions(original_content, combined_mentions)
                     reply_context = sanitized_original
                     content = f"[Replying to: {sanitized_original}] {content}"
             except (discord.NotFound, discord.Forbidden):
                 pass
     
-    sanitized_content = sanitize_mentions(content, message.mentions)
+    combined_mentions = list(message.mentions) + list(message.channel_mentions)
+    sanitized_content = sanitize_mentions(content, combined_mentions)
     bot.logger.info(f"Received message from {user_name} (ID: {user_id}): {sanitized_content}")
 
     try:
@@ -243,7 +245,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != message.id:  # Skip the current message
                     clean_name = strip_role_prefixes(msg.author.name)
-                    msg_content = sanitize_mentions(msg.content, msg.mentions)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                     formatted_msg = f"@{clean_name}: {truncated_content}"
                     
@@ -266,7 +269,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             context += "</conversation>\n"
             
             if relevant_memories:
-                context += "**Relevant memories:**\n"
+                context += f"Current {len(relevant_memories)} Relevant Memories:\n"
                 context += "<relevant_memories>\n"
                 for memory, score in relevant_memories:
                     # Convert timestamps in memory to temporal expressions
@@ -282,9 +285,9 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             
             prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
             prompt = prompt_formats[prompt_key].format(
-                context=sanitize_mentions(context, message.mentions),
+                context=sanitize_mentions(context, combined_mentions),
                 user_name=user_name,
-                user_message=sanitize_mentions(sanitized_content, message.mentions)
+                user_message=sanitize_mentions(sanitized_content, combined_mentions)
             )
 
             system_prompt_key = 'default_chat'
@@ -297,8 +300,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             typing_task.cancel()
             
         if response_content:
-            formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled)
-            await send_long_message(message.channel, formatted_content)
+            formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
+            await send_long_message(message.channel, formatted_content, bot=bot)
             bot.logger.info(f"Sent response to {user_name} (ID: {user_id}): {response_content[:1000]}...")
 
             timestamp = currentmoment()
@@ -307,7 +310,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             # Create complete interaction memory including both user input and bot response
             memory_text = (
                 f"User @{user_name} in #{channel_name} ({timestamp}): "
-                f"{sanitize_mentions(sanitized_content, message.mentions)}\n"
+                f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
                 f"@{bot.user.name}: {response_content}"
             )
             memory_index.add_memory(user_id, memory_text)
@@ -351,7 +354,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         }, bot_id=bot.user.name)
 
 async def process_files(message, memory_index, prompt_formats, system_prompts, user_message="", bot=None, temperature=TEMPERATURE):
-    """Process multiple files from a Discord message, handling combinations of images and text files."""
+    """Process multiple files from a Discord message, handling combinations of images and text files, including resizing large images."""
     if not getattr(bot, 'processing_enabled', True):
         await message.channel.send("Processing currently disabled.")
         return
@@ -360,7 +363,9 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     user_name = message.author.name
     
     if not message.attachments:
-        raise ValueError("No attachments found in message")
+        # This case should technically not be hit if called from on_message check
+        await message.channel.send("No attachments found.") 
+        return
 
     # Track files for combined analysis
     image_files = []
@@ -375,7 +380,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     # Standardize mention handling
     if message.guild and message.guild.me:
         user_message = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
-    user_message = sanitize_mentions(user_message, message.mentions)
+    combined_mentions = list(message.mentions) + list(message.channel_mentions)  
+    user_message = sanitize_mentions(user_message, combined_mentions)
 
     bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
 
@@ -385,11 +391,12 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         
         # Build context once before entering typing indicator
         context = f"Current channel: #{message.channel.name if hasattr(message.channel, 'name') else 'Direct Message'}\n\n"
-        context += "**Ongoing Chatroom Conversation:**\n\n"
+        context += "Ongoing Chatroom Conversation:\n\n"
         context += "<conversation>\n"
         messages = []
         async for msg in message.channel.history(limit=5):
-            msg_content = sanitize_mentions(msg.content, msg.mentions)
+            combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+            msg_content = sanitize_mentions(msg.content, combined_mentions)
             truncated_content = truncate_middle(msg_content, max_tokens=HARSH_TRUNCATION_LENGTH)
             author_name = msg.author.name
             # appends @ for chatroom user names
@@ -405,7 +412,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                         reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                 
                 if reaction_parts:
-                    display_text += f" ({' '.join(reaction_parts)})"
+                    display_text += f" ({ ' '.join(reaction_parts) })"
             
             messages.append(display_text)
         
@@ -416,95 +423,156 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         # Main processing block with typing indicator
         typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         try:
-            # First pass: Check all file types before processing
+            # Loop through attachments, handle size check and potential resizing here
             for attachment in message.attachments:
-                if attachment.size > 1000000:
-                    await message.channel.send(f"Skipping {attachment.filename} - file too large (>1MB)")
-                    continue
                 
                 ext = os.path.splitext(attachment.filename.lower())[1]
-                is_image = (attachment.content_type and 
-                          attachment.content_type.startswith('image/') and 
-                          ext in ALLOWED_IMAGE_EXTENSIONS)
-                          
-                is_text = ext in ALLOWED_EXTENSIONS
+                is_potentially_image = (attachment.content_type and 
+                                      attachment.content_type.startswith('image/') and 
+                                      ext in ALLOWED_IMAGE_EXTENSIONS)
+                is_potentially_text = ext in ALLOWED_EXTENSIONS
                 
-                if is_image:
-                    has_images = True
-                if is_text:
-                    has_text = True
-                    
-                if not (is_image or is_text):
-                    await message.channel.send(
-                        f"Skipping {attachment.filename} - unsupported type. "
-                        f"Supported types: {', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS)}"
-                    )
-                    continue
+                data_to_save = None
+                processed_as_image = False
+                processed_as_text = False
 
-                # Process file based on type
-                if is_image:
-                    try:
-                        image_data = await attachment.read()
-                        bot.logger.info(f"Downloaded image data for {attachment.filename}: {len(image_data)} bytes")
-
+                if attachment.size > 1000000:
+                    # --- Handling for OVERSIZED attachments --- 
+                    if is_potentially_image:
+                        await message.channel.send(f"Attempting to resize large image: {attachment.filename}...")
                         try:
+                            image_data = await attachment.read()
+                            bot.logger.info(f"Downloaded large image data: {len(image_data)} bytes")
+                            
                             img = Image.open(io.BytesIO(image_data))
-                            img.verify()
-                            bot.logger.info(f"Image verified: {img.format}, {img.size}, {img.mode}")
-                        except Exception as img_error:
-                            bot.logger.error(f"Image verification failed: {str(img_error)}")
-                            bot.logger.error(traceback.format_exc())
-                            raise ValueError(f"Invalid image data: {str(img_error)}")
+                            img.load()
+                            bot.logger.info(f"Large image opened: {img.format}, {img.size}, {img.mode}")
 
-                        # Use bot's file cache manager to create a temporary file
+                            # Aggressive resize
+                            MAX_DIMENSION = 1024 # Still use a dimension cap
+                            img.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
+                            bot.logger.info(f"Resized large image to fit within {MAX_DIMENSION}x{MAX_DIMENSION}")
+
+                            output_buffer = io.BytesIO()
+                            save_format = 'PNG' if img.mode == 'RGBA' else 'JPEG'
+                            if img.mode == 'P': img = img.convert('RGB'); save_format = 'JPEG'
+                            elif img.mode == 'LA': img = img.convert('RGBA'); save_format = 'PNG'
+                            
+                            img.save(output_buffer, format=save_format)
+                            resized_data = output_buffer.getvalue()
+                            bot.logger.info(f"Resized image data size: {len(resized_data)} bytes")
+
+                            if len(resized_data) > 1000000: # Check size *after* resize
+                                bot.logger.warning(f"Image {attachment.filename} still too large after resizing.")
+                                await message.channel.send(f"Sorry, could not resize {attachment.filename} sufficiently. Skipping.")
+                                continue # Skip this attachment
+                            else:
+                                data_to_save = resized_data
+                                processed_as_image = True # Mark as successfully processed image
+
+                        except Exception as resize_error:
+                            bot.logger.error(f"Error resizing image {attachment.filename}: {str(resize_error)}")
+                            bot.logger.error(traceback.format_exc())
+                            await message.channel.send(f"Error processing large image {attachment.filename}. Skipping.")
+                            continue # Skip on error
+                    else:
+                        # Oversized and not an image
+                        bot.logger.warning(f"Skipping oversized non-image file: {attachment.filename}")
+                        await message.channel.send(f"Skipping {attachment.filename} - file is over 1MB and not a resizable image.")
+                        continue # Skip this attachment
+                
+                else:
+                    # --- Handling for attachments UNDER OR EQUAL 1MB --- 
+                    if is_potentially_image:
+                        try:
+                            image_data = await attachment.read()
+                            # Optional: Keep dimension-based resize for smaller files?
+                            # For simplicity now, we just use the data directly if < 1MB
+                            # (The resize logic we added earlier for <1MB files is removed 
+                            #  to avoid complexity, relying on the >1MB check above primarily)
+                            data_to_save = image_data 
+                            processed_as_image = True
+
+                            # Minimal verification (can be expanded if needed)
+                            try:
+                                img = Image.open(io.BytesIO(data_to_save))
+                                img.verify() # Quick check
+                                bot.logger.info(f"Verified small image: {attachment.filename}")
+                            except Exception as verify_err:
+                                bot.logger.warning(f"Small image {attachment.filename} failed verification: {verify_err}. Still attempting to use.")
+                                # Don't skip, API might handle slightly corrupt images
+
+                        except Exception as img_error:
+                            bot.logger.error(f"Error processing small image {attachment.filename}: {str(img_error)}")
+                            # Don't raise, just skip this attachment
+                            continue 
+                            
+                    elif is_potentially_text:
+                        try:
+                            content_bytes = await attachment.read()
+                            text_content = content_bytes.decode('utf-8')
+                            text_contents.append({
+                                'filename': attachment.filename,
+                                'content': text_content
+                            })
+                            processed_as_text = True
+                            bot.logger.info(f"Successfully processed text file: {attachment.filename}")
+                        except UnicodeDecodeError as e:
+                            bot.logger.error(f"Error decoding text file {attachment.filename}: {str(e)}")
+                            await message.channel.send(
+                                f"Warning: {attachment.filename} couldn't be decoded as UTF-8. Skipping."
+                            )
+                            continue
+                        except Exception as e:
+                            bot.logger.error(f"Error reading text file {attachment.filename}: {str(e)}")
+                            continue
+                    else:
+                         # Under 1MB, but not image or text
+                         await message.channel.send(
+                            f"Skipping {attachment.filename} - unsupported type. "
+                            f"Supported types: { ', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS) }"
+                         )
+                         continue # Skip unsupported type
+
+                # --- Save processed data to temp file --- 
+                if processed_as_image and data_to_save:
+                    try:
+                        # Use bot's file cache manager
                         file_cache = bot.cache_managers['file']
                         temp_path, file_id = file_cache.create_temp_file(
                             user_id=user_id,
                             prefix="img_",
                             suffix=os.path.splitext(attachment.filename)[1],
-                            content=image_data
+                            content=data_to_save
                         )
-                        bot.logger.info(f"Saved image to temporary path: {temp_path}")
+                        bot.logger.info(f"Saved image {attachment.filename} to temp path: {temp_path}")
                         
                         if not os.path.exists(temp_path):
-                            raise FileNotFoundError(f"Failed to save image: {temp_path} not found")
+                             bot.logger.error(f"Failed to save image to temp file: {temp_path}")
+                             continue # Skip if saving failed
                         
                         image_files.append(attachment.filename)
                         temp_paths.append(temp_path)
+                        has_images = True # Mark that we have at least one image
                         
                     except Exception as e:
-                        bot.logger.error(f"Error processing image {attachment.filename}: {str(e)}")
-                        bot.logger.error(traceback.format_exc())
-                        continue
+                         bot.logger.error(f"Error saving temp image file {attachment.filename}: {str(e)}")
+                         continue # Skip if error during temp file creation
+                elif processed_as_text:
+                     has_text = True # Mark that we have text content
 
-                elif is_text:
-                    try:
-                        content = await attachment.read()
-                        try:
-                            text_content = content.decode('utf-8')
-                            text_contents.append({
-                                'filename': attachment.filename,
-                                'content': text_content
-                            })
-                            bot.logger.info(f"Successfully processed text file: {attachment.filename}")
-                        except UnicodeDecodeError as e:
-                            bot.logger.error(f"Error decoding text file {attachment.filename}: {str(e)}")
-                            await message.channel.send(
-                                f"Warning: {attachment.filename} couldn't be decoded. "
-                                "Please ensure it's properly encoded as UTF-8."
-                            )
-                            continue
-                    except Exception as e:
-                        bot.logger.error(f"Error processing text file {attachment.filename}: {str(e)}")
-                        continue
+            # --- End of attachment loop --- 
 
-            # Verify we have files to process
-            if not (image_files or text_contents):
-                raise ValueError("No valid files to analyze")
+            # Verify we have files to process AFTER the loop
+            if not (has_images or has_text):
+                # Check if any message was sent about skipping before sending this
+                if not message.channel.last_message or message.channel.last_message.author != bot.user:
+                     await message.channel.send("No valid files found to analyze after processing.")
+                return # Exit if nothing was successfully processed
 
             # Update flags based on actual processed content
-            has_images = bool(image_files)
-            has_text = bool(text_contents)
+            # has_images = bool(image_files) # Already updated in the loop
+            # has_text = bool(text_contents)
 
             # Validate required prompts
             if has_images and has_text:
@@ -565,8 +633,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             bot.logger.info(f"API call successful. Response preview: {response_content[:100]}...")
 
             if response_content:
-                formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled)
-                await send_long_message(message.channel, formatted_content)
+                formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
+                await send_long_message(message.channel, formatted_content, bot=bot)
                 bot.logger.info(f"Sent file analysis response to {user_name} (ID: {user_id})")
 
         finally:
@@ -583,7 +651,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 files_description.append(f"{len(text_contents)} text files: {', '.join(t['filename'] for t in text_contents)}")
                 
             timestamp = currentmoment()
-            memory_text = f"({timestamp}) Analyzed {' and '.join(files_description)} for User @{user_name}. User's message: {sanitize_mentions(user_message, message.mentions)}. Analysis: {response_content}"
+            memory_text = f"({timestamp}) Analyzed {' and '.join(files_description)} for User @{user_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}. Analysis: {response_content}"
             
             # Create background task for thought generation
             asyncio.create_task(generate_and_save_thought(
@@ -632,7 +700,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 except Exception as e:
                     bot.logger.error(f"Error removing temporary file {temp_path}: {str(e)}")
 
-async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800):
+async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800, bot=None):
     """
     Sends a long text message by intelligently splitting it while preserving formatting.
     
@@ -640,6 +708,7 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
         channel: Discord channel to send messages to
         text: Text content to send
         max_length: Maximum length per message (default 1800 to allow for padding)
+        bot: Bot instance for accessing mentions configuration and guilds
     """
     if not text:
         return
@@ -649,10 +718,7 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
     code_block_open = False
     in_bullet_list = False
     
-    # Balance wraps in the full text before splitting
-    text = balance_wraps(text)
-    
-    # Split into lines first to preserve formatting
+    # Remove premature balance_wraps here - let's split first
     lines = text.split('\n')
     
     for line in lines:
@@ -666,40 +732,32 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
         elif line.strip() and not line.strip().startswith(('- ', '* ', '+ ')):
             in_bullet_list = False
             
-        # Calculate new chunk size
         new_chunk = current_chunk + ('\n' if current_chunk else '') + line
         
-        # Check if adding this line would exceed the limit
         if len(new_chunk) > max_length and current_chunk:
-            # Balance wraps in the chunk before sending
-            current_chunk = balance_wraps(current_chunk)
-            
-            # Close code block if needed
+            # Close code block if needed before balancing
             if code_block_open:
                 current_chunk += '\n```'
                 code_block_open = False
-                
-            chunks.append(current_chunk)
+            
+            # Now balance wraps on the complete chunk
+            chunks.append(balance_wraps(current_chunk))
+            
             current_chunk = line
             
             # Reopen code block in new chunk if needed
-            if '```' in line:
-                code_block_open = True
-            elif code_block_open:
+            if code_block_open:
                 current_chunk = '```' + current_chunk
                 
         else:
             current_chunk = new_chunk
             
-    # Add final chunk
+    # Handle final chunk
     if current_chunk:
-        # Balance wraps in final chunk
-        current_chunk = balance_wraps(current_chunk)
-        
-        # Close any open code block
         if code_block_open:
             current_chunk += '\n```'
-        chunks.append(current_chunk)
+        # Balance wraps only on the final complete chunk
+        chunks.append(balance_wraps(current_chunk))
     
     # Send chunks with rate limit handling
     for chunk in chunks:
@@ -709,8 +767,12 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
         
         while retry_count < max_retries:
             try:
-                await channel.send(chunk.strip())
-                # Add small delay between messages
+                # Remove sanitize_mentions call here, pass guild directly to format_discord_mentions
+                formatted_chunk = format_discord_mentions(chunk, channel.guild, 
+                                                         True if bot is None else bot.mentions_enabled, 
+                                                         bot)
+                
+                await channel.send(formatted_chunk.strip())
                 await asyncio.sleep(0.5)
                 break
                 
@@ -724,7 +786,6 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
                     retry_after = getattr(e, 'retry_after', base_delay * (2 ** retry_count))
                     bot.logger.warning(f"Rate limited. Waiting {retry_after:.2f}s before retry {retry_count}/{max_retries}")
                     await asyncio.sleep(retry_after)
-                    
                 else:
                     bot.logger.error(f"Error sending message chunk: {str(e)}")
                     break
@@ -884,6 +945,11 @@ class CustomHelpCommand(commands.HelpCommand):
             embed.add_field(
                 name="⚡ Processing",
                 value="✅" if getattr(self.context.bot, 'processing_enabled', True) else "❌",
+                inline=True
+            )
+            embed.add_field(
+                name="🔗 Mentions",
+                value="✅" if getattr(self.context.bot, 'mentions_enabled', True) else "❌",
                 inline=True
             )
 
@@ -1089,21 +1155,24 @@ def setup_bot(prompt_path=None, bot_id=None):
         # Regular message processing
         if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
             if message.attachments:
-                attachment = message.attachments[0]
-                if attachment.size <= 1000000:  # 1MB limit
-                    try:
-                        await process_files(
-                            message=message,
-                            memory_index=user_memory_index,
-                            prompt_formats=prompt_formats,
-                            system_prompts=system_prompts,
-                            user_message=message.content,
-                            bot=bot
-                        )
-                    except Exception as e:
-                        await message.channel.send(f"Error processing file: {str(e)}")
-                else:
-                    await message.channel.send("File is too large. Please upload a file smaller than 1 MB.")
+                # REMOVED Size check here - delegate fully to process_files
+                # attachment = message.attachments[0]
+                # if attachment.size <= 1000000:  # 1MB limit
+                try:
+                    await process_files(
+                        message=message,
+                        memory_index=user_memory_index,
+                        prompt_formats=prompt_formats,
+                        system_prompts=system_prompts,
+                        user_message=message.content,
+                        bot=bot
+                    )
+                except Exception as e:
+                    await message.channel.send(f"Error processing file(s): {str(e)}")
+                    bot.logger.error(f"Error during process_files call from on_message: {str(e)}")
+                    bot.logger.error(traceback.format_exc())
+                # else:
+                #     await message.channel.send("File is too large. Please upload a file smaller than 1 MB.")
             else:
                 await process_message(message, user_memory_index, prompt_formats, system_prompts, github_repo, is_command=False)
         
@@ -1242,7 +1311,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                 
             # Send the summary as a DM to the user
             try:
-                await send_long_message(ctx.author, f"**Channel Summary for #{channel.name} (Last {n} messages)**\n\n{summary}")
+                await send_long_message(ctx.author, f"**Channel Summary for #{channel.name} (Last {n} messages)**\n\n{summary}", bot=bot)
                 
                 # Confirm that the summary was sent
                 if isinstance(ctx.channel, discord.DMChannel):
@@ -1410,12 +1479,13 @@ def setup_bot(prompt_path=None, bot_id=None):
                 
                 # Build context
                 context = f"Current discord channel: #{ctx.channel.name if hasattr(ctx.channel, 'name') else 'Direct Message'}\n\n"
-                context += "**Ongoing Chatroom Conversation:**\n\n"
+                context += "Ongoing Chatroom Conversation:\n\n"
                 context += "<conversation>\n"
                 messages = []
                 async for msg in ctx.channel.history(limit=MAX_CONVERSATION_HISTORY):
                     if msg.id != ctx.message.id:  # Skip the command message
-                        msg_content = sanitize_mentions(msg.content, msg.mentions)
+                        combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                        msg_content = sanitize_mentions(msg.content, combined_mentions)
                         truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                         clean_name = strip_role_prefixes(msg.author.name)
                         formatted_msg = f" @{clean_name}: {truncated_content}"
@@ -1430,7 +1500,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                                     reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                             
                             if reaction_parts:
-                                formatted_msg += f" ({' '.join(reaction_parts)})"
+                                formatted_msg += f" (Discord Member Reactions: {' '.join(reaction_parts)})"
                         
                         messages.append(formatted_msg)
 
@@ -1459,7 +1529,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                 formatted_response += f"**Task**: {user_task_description}\n\n"
                 formatted_response += response_content
                 
-                await send_long_message(ctx.channel, formatted_response)
+                await send_long_message(ctx.channel, formatted_response, bot=bot)
                 bot.logger.info(f"Sent repo file chat response for file: {file_path}")
 
                 # Create background task for thought generation
@@ -1517,7 +1587,8 @@ def setup_bot(prompt_path=None, bot_id=None):
             messages = []
             async for msg in ctx.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != ctx.message.id:  # Skip the question message
-                    msg_content = sanitize_mentions(msg.content, msg.mentions)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                     clean_name = strip_role_prefixes(msg.author.name)
                     formatted_msg = f" @{clean_name}: {truncated_content}"
@@ -1532,7 +1603,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                                 reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
-                            formatted_msg += f" ({' '.join(reaction_parts)})"
+                            formatted_msg += f"\n(Message Reactions: {' '.join(reaction_parts)})"
                     
                     messages.append(formatted_msg)
             
@@ -1557,7 +1628,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             # Format response outside typing block
             if response:
                 response += "\n\nReferenced Files:\n```md\n" + "\n".join(file_links) + "\n```"
-                await send_long_message(ctx, response)
+                await send_long_message(ctx, response, bot=bot)
                 bot.logger.info(f"Sent repo chat response for question: {question[:100]}...")
 
         except Exception as e:
@@ -1715,7 +1786,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
     async def toggle_mentions(ctx, state: str = None):
         """Toggle or check mention conversion state. Usage: !mentions <on|off|status>"""
-        if state is None:
+        if state is None or state.lower() == 'status':
             await ctx.send(f"Mention conversion is currently {'enabled' if bot.mentions_enabled else 'disabled'}.")
             return
             
@@ -1727,7 +1798,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.mentions_enabled = False
             await ctx.send("Mention conversion disabled - usernames will remain as plain text.")
         else:
-            await ctx.send("Invalid state. Use: on/off")
+            await ctx.send("Invalid state. Use: on/off/status")
 
     @bot.command(name='get_logs')
     @commands.check(lambda ctx: (

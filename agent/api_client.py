@@ -232,7 +232,7 @@ async def call_vllm_api(content, context, system_prompt, temperature):
             raise Exception(error_message)
 
 async def call_ollama_api(content, context, system_prompt, temperature, is_image):
-    logging.info(f"Calling Ollama API - Model: {api.model_name}, Temperature: {temperature + 0.5:.2f}")
+    logging.info(f"Calling Ollama API - Model: {api.model_name}, Temperature: {temperature:.2f}")
     client = openai.AsyncOpenAI(
         base_url=f"{api.api_base}/v1",
         api_key="ollama"  # Required but ignored
@@ -250,7 +250,7 @@ async def call_ollama_api(content, context, system_prompt, temperature, is_image
             model=api.model_name,
             messages=messages,
             max_tokens=16384,
-            temperature=temperature + 0.5
+            temperature=temperature
         )
         return response.choices[0].message.content.strip()
     except Exception as e:

@@ -7,7 +7,7 @@ def strip_role_prefixes(username: str) -> str:
     return username.lstrip('')  # Common role prefix characters
 
 def sanitize_mentions(content: str, mentions: list) -> str:
-    """Convert Discord mention IDs to readable usernames, preserving code blocks."""
+    """Convert Discord mention IDs to readable usernames and channel names, preserving code blocks."""
     if not content or not mentions:
         return content
         
@@ -36,6 +36,10 @@ def sanitize_mentions(content: str, mentions: list) -> str:
             f'<@&{m.id}>': f'@{strip_role_prefixes(m.name)}' if not in_code_block else strip_role_prefixes(m.name)
             for m in mentions if hasattr(m, 'name') and hasattr(m, 'guild_permissions')
         })
+        mention_map.update({
+            f'<#{m.id}>': f'#{m.name}' if not in_code_block else m.name
+            for m in mentions if hasattr(m, 'name') and isinstance(m, discord.TextChannel)
+        })
             
         # Log transformations
         for pattern, replacement in mention_map.items():
@@ -48,13 +52,33 @@ def sanitize_mentions(content: str, mentions: list) -> str:
         formatted_lines.append(current_line)
     
     result = '\n'.join(formatted_lines)
-    logging.info(f"Sanitized mentions result: {result[:100]}...")
+    logging.debug(f"Sanitized mentions result: {result[:100]}...")
     return result
 
-def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled: bool = True) -> str:
+def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled: bool = True, bot=None) -> str:
     """Convert readable usernames to either Discord mentions or display names."""
-    if not content or not guild:
+    if not content:
         return content
+        
+    # In DMs (guild is None), use display_name when possible
+    if not guild:
+        def format_dm_mentions(match):
+            username = match.group(1)
+            # Keep @ for code annotations like @property, @staticmethod, etc.
+            code_annotations = ['property', 'staticmethod', 'classmethod', 'decorator', 
+                              'param', 'return', 'override', 'abstractmethod']
+            if username.lower() in code_annotations:
+                return f"@{username}"
+                
+            # Try to find the user in mutual guilds to get display_name if bot is provided
+            if bot:
+                for guild in bot.guilds:
+                    member = discord.utils.get(guild.members, name=username)
+                    if member:
+                        return member.display_name
+            # Fall back to username if not found or bot not provided
+            return username
+        return re.sub(r'@([\w.]+)', format_dm_mentions, content)
         
     lines = content.split('\n')
     formatted_lines = []
@@ -72,6 +96,11 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                     clean_name = re.escape(strip_role_prefixes(member.name))
                     if f"@{member.name}" in current_line:
                         current_line = current_line.replace(f"@{member.name}", f"<@{member.id}>")
+                
+                # Handle channel name to channel mention conversion
+                for channel in sorted(guild.channels, key=lambda c: len(c.name), reverse=True):
+                    if hasattr(channel, 'name') and f"#{channel.name}" in current_line:
+                        current_line = current_line.replace(f"#{channel.name}", f"<#{channel.id}>")
             else:
                 # Transform @username to display name but preserve code-related @ symbols
                 def format_mentions_disabled(match):
@@ -82,7 +111,7 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                     if username.lower() in code_annotations:
                         return f"@{username}"
                         
-                    # For user mentions, use display name without @
+                    # For user mentions, use display_name without @
                     member = discord.utils.get(guild.members, name=username)
                     if member:
                         return member.display_name

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 import logging
@@ -18,6 +19,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Memory Cache Editor")
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="gui/static"), name="static")
 
 class MemoryUpdate(BaseModel):
     text: str
@@ -270,7 +274,7 @@ async def delete_memory(memory_id: int, user_id: Optional[str] = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/search/")
-async def search_memories(query: str = "", user_id: Optional[str] = None, per_page: Optional[int] = None):
+async def search_memories(query: str = "", user_id: Optional[str] = None, page: int = 1, per_page: int = 10):
     """Search memories with hybrid TF-IDF and BM25-like weighting"""
     if not cache['memories']:
         raise HTTPException(status_code=400, detail="No cache data loaded")
@@ -353,20 +357,35 @@ async def search_memories(query: str = "", user_id: Optional[str] = None, per_pa
     if query:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    if per_page is not None:
-        results = results[:per_page]
+    # Calculate pagination
+    total_items = len(results)
+    total_pages = math.ceil(total_items / per_page)
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
     
-    return results
+    # Get paginated results
+    paginated_results = results[start_idx:end_idx]
+    
+    return {
+        "memories": paginated_results,
+        "pagination": {
+            "current_page": page,
+            "total_pages": total_pages,
+            "total_items": total_items,
+            "per_page": per_page
+        }
+    }
 
 @app.get("/visualize/")
-async def visualize_network(query: str = "", user_id: Optional[str] = None):
+async def visualize_network(query: str = "", user_id: Optional[str] = None, page: int = 1, per_page: int = 10):
     """Visualize memory network as simple SVG based on current search results"""
     if not cache['memories']:
         raise HTTPException(status_code=400, detail="No cache data loaded")
     
-    # Get memories from search results with limit
-    MAX_NODES = 50  # Limit visualization to prevent performance issues
-    search_results = await search_memories(query=query, user_id=user_id, per_page=MAX_NODES)
+    # Get memories from search results with exact pagination
+    search_response = await search_memories(query=query, user_id=user_id, page=page, per_page=per_page)
+    search_results = search_response["memories"]
+    
     if not search_results:
         return HTMLResponse('<div class="error">No memories to visualize</div>')
     
@@ -392,13 +411,17 @@ async def visualize_network(query: str = "", user_id: Optional[str] = None):
     if not memory_to_keywords:
         return HTMLResponse('<div class="error">No memories with keywords to visualize</div>')
     
-    # Calculate links using inverted index
+    # Calculate links using inverted index, respecting user_id filter
     links = defaultdict(float)  # (mem1,mem2) -> weight
     max_shared = 1
     
+    # Get set of valid memory IDs for the current user
+    valid_memory_ids = set(memory_to_keywords.keys())
+    
     for mid, data in memory_to_keywords.items():
         for word in data["keywords"]:
-            sharing_memories = keyword_to_memories[word]
+            # Only consider memories that are in the current results
+            sharing_memories = keyword_to_memories[word] & valid_memory_ids
             for other_mid in sharing_memories:
                 if other_mid > mid:
                     key = (mid, other_mid)
@@ -482,16 +505,16 @@ async def visualize_network(query: str = "", user_id: Optional[str] = None):
     svg = [
         f'<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">',
         '<style>',
-        '.memory-link { stroke: #8b0000; transition: all 0.3s; }',
-        '.memory-link:hover { stroke: #ff4500; }',
-        '.memory-node { fill: #ff8c00; stroke: #ff4500; stroke-width: 2; transition: all 0.3s; cursor: pointer; }',
-        '.memory-node.active { fill: #ffd700; }',
-        '.memory-node:hover { fill: #000000; }',
-        '.memory-label { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 10px; fill: #ffa500; pointer-events: none; }',
-        '.memory-score { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 8px; fill: #ffd700; pointer-events: none; }',
-        '.memory-keyword { font-family: "Courier New", Courier, monospace; font-style: italic; font-size: 9px; fill: #ff4500; pointer-events: none; }',
+        '.memory-link { stroke: #000000; transition: all 0.3s; }',
+        '.memory-link:hover { stroke: #000000; opacity: 0.8; }',
+        '.memory-node { fill: #ff9c9c; stroke: #000000; stroke-width: 2; transition: all 0.3s; cursor: pointer; }',
+        '.memory-node.active { fill: #ff9c9c; opacity: 0.8; }',
+        '.memory-node:hover { fill: #ff9c9c; opacity: 0.7; }',
+        '.memory-label { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 10px; fill: #000000; pointer-events: none; }',
+        '.memory-score { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 8px; fill: #000000; pointer-events: none; }',
+        '.memory-keyword { font-family: "Courier New", Courier, monospace; font-style: italic; font-size: 9px; fill: #000000; pointer-events: none; }',
         '</style>',
-        '<rect width="100%" height="100%" fill="#000000"/>'
+        '<rect width="100%" height="100%" fill="#ff9c9c"/>'
     ]
     
     # Draw links with gradient opacity
@@ -561,238 +584,18 @@ async def root():
     <head>
         <title>Memory Cache Editor</title>
         <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-        <style>
-            body { 
-                padding: 20px; 
-                font-family: 'Courier New', Courier, monospace;
-                background-color: black;
-                color: orange;
-            }
-            .container { 
-                max-width: 1200px; 
-                margin: 0 auto; 
-            }
-            .memory-item { 
-                #border: 1px solid #333; 
-                padding: 15px; 
-                #margin: 10px 0; 
-                #border-radius: 5px;
-                #background-color: #111;
-            }
-
-            }
-            .button { 
-                padding: 5px 10px; 
-                margin-right: 5px; 
-                border: none; 
-                border-radius: 3px; 
-                cursor: pointer;
-                font-family: 'Courier New', Courier, monospace;
-                background-color: #444;
-                color: orange;
-            }
-            .edit-button { 
-                background-color: darkred; 
-                color: orange; 
-            }
-            .delete-button { 
-                background-color: red; 
-                color: orange; 
-            }
-            .save-button { 
-                background-color: darkred; 
-                color: orange; 
-            }
-            .memory-text { 
-                width: 100%; 
-                min-height: 20px; 
-                margin: 10px 0; 
-                padding: 8px;
-                background-color: #111;
-                color: orange;
-                font-family: 'Courier New', Courier, monospace;
-                border: 1px solid #333;
-                resize: none;
-                overflow: hidden;
-                box-sizing: border-box;
-            }
-            .metadata { 
-                font-size: 0.9em; 
-                color: #ff8c00; 
-                margin: 5px 0; 
-            }
-            .keywords { 
-                display: flex; 
-                flex-wrap: wrap; 
-                gap: 5px; 
-                margin: 5px 0; 
-            }
-            .keyword { 
-                background: #222; 
-                padding: 2px 8px; 
-                border-radius: 12px; 
-                font-size: 0.85em;
-                display: flex;
-                align-items: center;
-                gap: 4px;
-                color: orange;
-            }
-            .weight {
-                background: #333;
-                border-radius: 50%;
-                padding: 2px 6px;
-                font-size: 0.8em;
-                color: orange;
-            }
-            #save-status, #stats { 
-                margin: 10px 0; 
-                padding: 10px; 
-                border-radius: 4px; 
-            }
-            .success { 
-                background-color: #222; 
-                color: orange; 
-            }
-            .error { 
-                background-color: darkred; 
-                color: orange; 
-            }
-            .bot-select { 
-                padding: 8px; 
-                margin: 10px 0; 
-                width: 200px; 
-                font-size: 16px;
-                background-color: #111;
-                color: orange;
-                font-family: 'Courier New', Courier, monospace;
-                border: 1px solid #333;
-            }
-            .load-button {
-                background-color: darkred;
-                color: orange;
-                padding: 8px 15px;
-                border: none;
-                border-radius: 3px;
-                cursor: pointer;
-                font-size: 16px;
-                font-family: 'Courier New', Courier, monospace;
-            }
-            .load-button:hover {
-                background-color: red;
-            }
-            .save-button {
-                background-color: darkred;
-                color: orange;
-                padding: 8px 15px;
-                border: none;
-                border-radius: 3px;
-                cursor: pointer;
-                font-size: 16px;
-                font-family: 'Courier New', Courier, monospace;
-            }
-            .save-button:hover {
-                background-color: red;
-            }
-            .switch {
-                position: relative;
-                display: inline-block;
-                width: 40px;
-                height: 20px;
-            }
-            .switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            .slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #444;
-                transition: .4s;
-                border-radius: 20px;
-            }
-            .slider:before {
-                position: absolute;
-                content: "";
-                height: 16px;
-                width: 16px;
-                left: 2px;
-                bottom: 2px;
-                background-color: orange;
-                transition: .4s;
-                border-radius: 50%;
-            }
-            input:checked + .slider {
-                background-color: darkred;
-            }
-            input:checked + .slider:before {
-                transform: translateX(20px);
-            }
-            select, input[type="text"], input[type="number"] {
-                background-color: #111;
-                color: orange;
-                border: 1px solid #333;
-                font-family: 'Courier New', Courier, monospace;
-                padding: 5px;
-            }
-            h1, h3 {
-                color: orange;
-            }
-            #visualization {
-                background-color: #111;
-                border: 2px solid #ff4500;
-                border-radius: 5px;
-                padding: 20px;
-                margin-top: 20px;
-                box-shadow: 0 0 15px rgba(255, 69, 0, 0.2);
-            }
-            .visualization-button {
-                background-color: darkred;
-                color: orange;
-                padding: 8px 15px;
-                border: 2px solid #ff4500;
-                border-radius: 3px;
-                cursor: pointer;
-                font-family: 'Courier New', Courier, monospace;
-                font-weight: bold;
-                transition: all 0.3s;
-                margin-left: 10px;
-            }
-            .visualization-button:hover {
-                background-color: #ff4500;
-                border-color: orange;
-            }
-            .visualization-button.active {
-                background-color: #ff4500;
-                border-color: orange;
-            }
-
-            @keyframes highlightPulse {
-                0% { background-color: #111; }
-                50% { background-color: rgba(255, 69, 0, 0.2); }
-                100% { background-color: #111; }
-            }
-            .memory-text.highlighted {
-                animation: highlightPulse 2s;
-                border-color: #ff4500;
-                box-shadow: 0 0 10px rgba(255, 69, 0, 0.3);
-            }
-        </style>
+        <link rel="stylesheet" href="/static/style.css">
     </head>
     <body>
         <div class="container">
-            <h1>Memory Cache Editor</h1>
-            
-            <h3>Select Bot Cache</h3>
+            <!-- Visualization container always visible -->
+            <div id="visualization"></div>
+
+            <!-- Search input on its own line -->
             <div style="display: flex; gap: 10px; align-items: center;">
-                <select id="bot-select" class="bot-select">
+                <select id="bot-select" class="bot-select" onchange="loadSelectedCache()">
                     <option value="">Loading bots...</option>
                 </select>
-                <button onclick="loadSelectedCache()" class="load-button">Load Cache</button>
             </div>
             <div id="stats"></div>
 
@@ -800,54 +603,32 @@ async def root():
                     class="button save-button">
                 Save Changes
             </button>
-            <button onclick="showVisualization()" 
-                    class="visualization-button">
-                Show Network
-            </button>
             <div id="save-status"></div>
             
-            <!-- Add visualization container -->
-            <div id="visualization" style="display: none; margin-top: 20px; border: 1px solid #eee; padding: 10px;"></div>
-            
-            <h3>Memory Browser</h3>
-            <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
-                <div class="toggle-container" style="display: flex; align-items: center; gap: 5px;">
-                    <label class="switch">
-                        <input type="checkbox" id="search_mode" checked onchange="toggleSearchMode()">
-                        <span class="slider round"></span>
-                    </label>
-                    <span>Search Mode</span>
-                </div>
+            <div style="margin-bottom: 15px;">
                 <input type="text" 
                        id="query_input" 
-                       placeholder="Search (min 2 chars)..." 
-                       style="flex: 1; padding: 8px;"
+                       placeholder="Search memories..." 
                        oninput="debounce(handleSearchInput, 800)()">
+            </div>
+            
+            <!-- Controls on separate line -->
+            <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
                 <select id="user_id_select" 
-                        style="padding: 8px;"
                         onchange="fetchMemories()">
                     <option value="">All Users</option>
                 </select>
-                <div id="search_controls" style="display: flex; gap: 5px;">
-                <input type="number" 
-                       id="top_input" 
-                       placeholder="Top N" 
-                       value="10" 
-                       min="1" 
-                       style="width: 80px; padding: 8px;"
-                       oninput="fetchMemories()">
-                </div>
-                <div id="pagination_controls" style="display: none; gap: 5px; align-items: center;">
+                <div id="pagination_controls" style="display: flex; gap: 5px; align-items: center;">
                     <input type="number" 
                            id="per_page_input" 
                            placeholder="Per Page" 
                            value="10" 
                            min="1" 
-                           style="width: 80px; padding: 8px;"
+                           style="width: 80px;"
                            onchange="fetchMemories()">
-                    <button onclick="changePage(-1)" class="button">&lt; Prev</button>
+                    <button onclick="changePage(-1)" class="button">&lt;</button>
                     <span id="page_info">Page 1</span>
-                    <button onclick="changePage(1)" class="button">Next &gt;</button>
+                    <button onclick="changePage(1)" class="button">&gt;</button>
                 </div>
             </div>
             
@@ -882,7 +663,6 @@ async def root():
                     const botName = select.value;
                     
                     if (!botName) {
-                        alert('Please select a bot first');
                         return;
                     }
                     
@@ -904,6 +684,7 @@ async def root():
                             </div>`;
                         isModified = false;
                         updateUserIds();
+                        fetchMemories();  // Fetch and display memories after loading cache
                     })
                     .catch(error => {
                         document.getElementById('stats').innerHTML = `
@@ -926,21 +707,6 @@ async def root():
 
                 function handleSearchInput() {
                     const query = document.getElementById('query_input').value.trim();
-                    if (query.length < 2) return; // Don't search for very short queries
-                    fetchMemories();
-                }
-
-                function toggleSearchMode() {
-                    const searchMode = document.getElementById('search_mode').checked;
-                    const queryInput = document.getElementById('query_input');
-                    const searchControls = document.getElementById('search_controls');
-                    const paginationControls = document.getElementById('pagination_controls');
-                    
-                    queryInput.disabled = !searchMode;
-                    searchControls.style.display = searchMode ? 'flex' : 'none';
-                    paginationControls.style.display = searchMode ? 'none' : 'flex';
-                    
-                    currentPage = 1;
                     fetchMemories();
                 }
 
@@ -965,19 +731,20 @@ async def root():
 
                 // Call initAutoResize after loading memories
                 function fetchMemories() {
-                    const searchMode = document.getElementById('search_mode').checked;
                     const query = document.getElementById('query_input').value.trim();
                     const userId = document.getElementById('user_id_select').value;
-                    const topN = searchMode ? (document.getElementById('top_input').value || 10) : null;
                     const perPage = document.getElementById('per_page_input').value || 10;
                     let url = "";
 
-                    if(searchMode && query && query.length >= 2) {
-                        url = `/search/?query=${encodeURIComponent(query)}&per_page=${topN}` + (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
-                    } else if (!searchMode) {
-                        url = `/list/?page=${currentPage}&per_page=${perPage}` + (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
+                    // Always use pagination for both search and list views
+                    if (query) {
+                        // For search results, use the search endpoint with pagination
+                        url = `/search/?query=${encodeURIComponent(query)}&page=${currentPage}&per_page=${perPage}` + 
+                              (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
                     } else {
-                        return; // Don't fetch if search mode but query too short
+                        // For all memories, use the list endpoint with pagination
+                        url = `/list/?page=${currentPage}&per_page=${perPage}` + 
+                              (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
                     }
 
                     fetch(url)
@@ -986,8 +753,8 @@ async def root():
                         const resultsDiv = document.getElementById('results');
                         resultsDiv.innerHTML = "";
                        
-                        // Update pagination info if in list mode
-                        if (!searchMode && data.pagination) {
+                        // Update pagination info for both search and list views
+                        if (data.pagination) {
                             document.getElementById('page_info').textContent = 
                                 `Page ${data.pagination.current_page} of ${data.pagination.total_pages}`;
                         }
@@ -1065,11 +832,8 @@ async def root():
                         // Initialize auto-resize for all textareas
                         initAutoResize();
                         
-                        // Update visualization if visible
-                        const vizDiv = document.getElementById('visualization');
-                        if (vizDiv.style.display !== 'none') {
-                            showVisualization();
-                        }
+                        // Always update visualization with current results
+                        updateVisualization();
                     })
                     .catch(error => alert('Error fetching memories: ' + error));
                 }
@@ -1186,29 +950,23 @@ async def root():
                     });
                 }
 
-                function showVisualization() {
-                    const vizDiv = document.getElementById('visualization');
-                    const vizButton = document.querySelector('.visualization-button');
+                function updateVisualization() {
                     const query = document.getElementById('query_input').value;
                     const userId = document.getElementById('user_id_select').value;
+                    const perPage = document.getElementById('per_page_input').value || 10;
                     
-                    if (vizDiv.style.display === 'none') {
-                        const params = new URLSearchParams();
-                        if (query) params.append('query', query);
-                        if (userId) params.append('user_id', userId);
-                        
-                        fetch('/visualize/?' + params.toString())
-                            .then(response => response.text())
-                            .then(svg => {
-                                vizDiv.innerHTML = svg;
-                                vizDiv.style.display = 'block';
-                                vizButton.classList.add('active');
-                            })
-                            .catch(error => alert('Error loading visualization: ' + error));
-                    } else {
-                        vizDiv.style.display = 'none';
-                        vizButton.classList.remove('active');
-                    }
+                    const params = new URLSearchParams();
+                    if (query) params.append('query', query);
+                    if (userId) params.append('user_id', userId);
+                    params.append('page', currentPage);
+                    params.append('per_page', perPage);
+                    
+                    fetch('/visualize/?' + params.toString())
+                        .then(response => response.text())
+                        .then(svg => {
+                            document.getElementById('visualization').innerHTML = svg;
+                        })
+                        .catch(error => console.error('Error updating visualization:', error));
                 }
                 
                 function highlightMemory(id) {

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DMN Network Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .container {
+            width: 100%;
+            height: 500px;
+            background-color: #ff9c9c;
+        }
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <svg viewBox="0 0 800 600" id="dmn-svg"></svg>
+    </div>
+
+    <script>
+        // Physics parameters
+        const SPRING_K = 0.02;
+        const REPEL_K = 200;
+        const DAMPING = 0.95;
+        const PRUNE_THRESHOLD = 0.2;
+
+        // State variables
+        let nodes = [];
+        let connections = [];
+        let animationFrame;
+        let frameCount = 0;
+        const svg = document.getElementById('dmn-svg');
+
+        // Initialize network
+        function initializeNetwork() {
+            // Create initial nodes
+            nodes = Array.from({ length: 5 }, (_, i) => ({
+                id: i,
+                x: Math.random() * 600 + 100,
+                y: Math.random() * 400 + 100,
+                vx: 0,
+                vy: 0,
+                weight: 1,
+                connections: new Set()
+            }));
+
+            // Create initial connections
+            connections = [
+                { source: 0, target: 1, weight: 1 },
+                { source: 1, target: 2, weight: 1 },
+                { source: 2, target: 3, weight: 1 }
+            ];
+
+            // Update node connections
+            connections.forEach(conn => {
+                nodes[conn.source].connections.add(conn.target);
+                nodes[conn.target].connections.add(conn.source);
+            });
+
+            renderNetwork();
+        }
+
+        // Update physics simulation
+        function updatePhysics() {
+            // Calculate forces
+            const forces = nodes.map(() => ({ fx: 0, fy: 0 }));
+            
+            // Spring forces between connected nodes
+            connections.forEach(conn => {
+                if (!nodes[conn.source] || !nodes[conn.target]) return;
+                
+                const source = nodes[conn.source];
+                const target = nodes[conn.target];
+                
+                const dx = target.x - source.x;
+                const dy = target.y - source.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist === 0) return;
+                
+                const force = SPRING_K * (dist - 100) * conn.weight;
+                
+                const fx = force * dx / dist;
+                const fy = force * dy / dist;
+                
+                forces[conn.source].fx += fx;
+                forces[conn.source].fy += fy;
+                forces[conn.target].fx -= fx;
+                forces[conn.target].fy -= fy;
+            });
+            
+            // Repulsion between all nodes
+            for (let i = 0; i < nodes.length; i++) {
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const dx = nodes[j].x - nodes[i].x;
+                    const dy = nodes[j].y - nodes[i].y;
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq === 0) continue;
+                    const dist = Math.sqrt(distSq);
+                    
+                    if (dist < 200) {
+                        const force = -REPEL_K / distSq;
+                        const fx = force * dx / dist;
+                        const fy = force * dy / dist;
+                        
+                        forces[i].fx += fx;
+                        forces[i].fy += fy;
+                        forces[j].fx -= fx;
+                        forces[j].fy -= fy;
+                    }
+                }
+            }
+            
+            // Update positions
+            nodes.forEach((node, i) => {
+                node.vx = (node.vx + forces[i].fx) * DAMPING;
+                node.vy = (node.vy + forces[i].fy) * DAMPING;
+                
+                node.x += node.vx;
+                node.y += node.vy;
+                
+                // Contain within bounds
+                node.x = Math.max(50, Math.min(750, node.x));
+                node.y = Math.max(50, Math.min(550, node.y));
+                
+                // Decay weight
+                node.weight *= 0.999;
+            });
+        }
+
+        // Render the network
+        function renderNetwork() {
+            // Clear SVG
+            svg.innerHTML = '';
+            
+            // Render connections
+            connections.forEach((conn, i) => {
+                const source = nodes[conn.source];
+                const target = nodes[conn.target];
+                if (!source || !target) return;
+                
+                const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                line.setAttribute("x1", source.x);
+                line.setAttribute("y1", source.y);
+                line.setAttribute("x2", target.x);
+                line.setAttribute("y2", target.y);
+                line.setAttribute("stroke", `rgba(0, 0, 0, ${conn.weight * 0.8})`);
+                line.setAttribute("stroke-width", conn.weight * 2);
+                svg.appendChild(line);
+            });
+            
+            // Render nodes
+            nodes.forEach((node, i) => {
+                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                
+                circle.setAttribute("cx", node.x);
+                circle.setAttribute("cy", node.y);
+                circle.setAttribute("r", 10 + node.weight * 5);
+                circle.setAttribute("fill", "#ff9c9c");
+                circle.setAttribute("stroke", "#000000");
+                circle.setAttribute("stroke-width", "2");
+                circle.setAttribute("opacity", 0.9);
+                
+                const animate = document.createElementNS("http://www.w3.org/2000/svg", "animate");
+                animate.setAttribute("attributeName", "r");
+                animate.setAttribute("values", `${10 + node.weight * 5};${12 + node.weight * 5};${10 + node.weight * 5}`);
+                animate.setAttribute("dur", "2s");
+                animate.setAttribute("repeatCount", "indefinite");
+                
+                circle.appendChild(animate);
+                g.appendChild(circle);
+                svg.appendChild(g);
+            });
+        }
+
+        // Animation loop
+        function animate() {
+            frameCount++;
+            updatePhysics();
+            
+            // Occasionally add new nodes and connections
+            if (frameCount % 60 === 0 && Math.random() < 0.3) {
+                const newNodeId = nodes.length;
+                const randomTarget = Math.floor(Math.random() * nodes.length);
+                
+                const newNode = {
+                    id: newNodeId,
+                    x: Math.random() * 600 + 100,
+                    y: Math.random() * 400 + 100,
+                    vx: 0,
+                    vy: 0,
+                    weight: 1,
+                    connections: new Set([randomTarget])
+                };
+                
+                const newConnection = {
+                    source: newNodeId,
+                    target: randomTarget,
+                    weight: 1
+                };
+
+                nodes.push(newNode);
+                connections.push(newConnection);
+                nodes[randomTarget].connections.add(newNodeId);
+            }
+            
+            // Prune weak nodes
+            if (frameCount % 100 === 0) {
+                const validNodes = nodes.filter(node => node.weight > PRUNE_THRESHOLD);
+                const validConnections = connections.filter(conn => 
+                    nodes[conn.source]?.weight > PRUNE_THRESHOLD &&
+                    nodes[conn.target]?.weight > PRUNE_THRESHOLD
+                );
+                
+                nodes = validNodes;
+                connections = validConnections;
+            }
+            
+            renderNetwork();
+            animationFrame = requestAnimationFrame(animate);
+        }
+
+        // Start the visualization
+        initializeNetwork();
+        animationFrame = requestAnimationFrame(animate);
+
+        // Cleanup on window unload
+        window.addEventListener('unload', () => {
+            cancelAnimationFrame(animationFrame);
+        });
+    </script>
+</body>
+</html> 

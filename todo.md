@@ -1,6 +1,14 @@
+- temporality is something saying 2 years ago when that is impossible
+
+- process image sendlong message typing indicator is triggering twice and not encapsulating the process correctly.
+
+- long message splitting is not appending broken markdown wraps causing @mention transforms to occasionally break.
+
 - DMs aren't handling the removal of '@' in direct chats. possible not calling the sanitize_mentions method
 
-- enable toggling 'hippocampus' ranking off or on
+- DMs need renaming in the Model Context Prompt (lol).. j/k #MCPrip... no srsly tho. I need to rename the DM from discords abstraction to "Private Message" and test it to see if the agents silo memories by choice better between recalled plain text context without index enforcement. 🤔
+
+- enable toggling `hippocampus` ranking off or on
     + tune the hippocampus and amgdelya hyperparameter interactions for homeostatic equilibrium management of the in memory memory space for the agent
 
 - logging events need aligning and correcting where possible
@@ -25,12 +33,21 @@
 
 - the `user_name` is unsafe and being transformed by an async operation causing mentioned users to hijack the index and response causing a Freaky Friday event.
 
-- #channelnames are handled with #102989861208 numerical IDS and also need special handling simialr to mention transforms between channels and agent *sigh*
-
-- defaultmode.py needs a context window limit... I'd prefer not to chunk or truncate if possible. only an issue on sub 32k context window limit llms.
+- `defaultmode.py` needs a context window limit... I'd prefer not to chunk or truncate if possible. only an issue on sub 32k context window limit llms.
     To ensure information is not lost in the 0 shot compression step. It's up to the agent to capture important details as trimming is aggressive.
     Because I don't use chunking by default and rely more on truncation and item n limits...
 
-COMPLETED 070425
+- `defaultmode.py` needs the hyperparam values moved to bot config from DMN class. Also preset modes need honouring per bot init. This needs thoughtful integration considerations. 
+
+COMPLETED
 
 ~~- image caching isn't using the temporty agent designated cache folders...~~ - done
+
+- #channelnames are handled with #102989861208 numerical IDS and also need special handling simialr to mention transforms between channels and agent *sigh*
+    example mentoning one by name to the agent and it reproduces id instyead of name back to channel exposing probably the id instead of the name back afwd to the agent, needs mention sanitazation logic 
+    ```ATTENTION SHIFT
+    ------------
+    Location: <#1360228315209666682>
+    Status: [PRESERVED GAME]
+    Mood: [APPRECIATIVE]
+    ```

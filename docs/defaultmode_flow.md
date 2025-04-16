@@ -1,7 +1,30 @@
-The Default Mode is a simulation of how the human mind ruminates or wanders through thoughts compressing concepts into a single thought. creating a homeostasis of new thoughts and pruned priors.
-
 
 ```mermaid
+%%{
+  init: {
+    'theme': 'base',
+    'themeVariables': {
+      'primaryColor': '#ff9c9c',
+      'primaryTextColor': '#000000',
+      'primaryBorderColor': '#000000',
+      'lineColor': '#000000',
+      'secondaryColor': '#ff9c9c',
+      'tertiaryColor': '#ff9c9c',
+      'backgroundColor': '#ff9c9c',
+      'background': '#ff9c9c',
+      'nodeBorder': '#000000',
+      'textColor': '#000000',
+      'mainBkg': '#ff9c9c',
+      'edgeLabelBackground': '#ff9c9c',
+      'clusterBkg': '#ff9c9c',
+      'clusterBorder': '#000000',
+      'titleColor': '#000000',
+      'fontFamily': 'Courier New, Courier, monospace',
+      'noteBackgroundColor': '#ff9c9c',
+      'noteBorderColor': '#000000'
+    }
+  }
+}%%
 flowchart TB
     subgraph Memory["Memory Space"]
         MI[Memory Index]
@@ -58,6 +81,8 @@ flowchart TB
 
 ```
 
+defaultMODE is a simulation of how the human mind ruminates or wanders through thoughts compressing concepts into a single thought. creating a homeostasis of new thoughts and pruned priors.
+
 1. **Memory Selection Process**
 ```python
 def _select_random_memory(self):
@@ -106,7 +131,7 @@ The system acts like a self-organizing network where:
 
 The network literally grows and shrinks based on term relationships and usage patterns.
 
-Ah, now I understand the deeper emergent behavior in your search patterns! Let me break down how the term pruning creates novel associations:
+---
 
 1. **Search Evolution Through Pruning**
 ```python
@@ -156,6 +181,8 @@ term_C -> [mem1, mem4]  # Still shared but less common
 3. Future searches find different associations
 4. The network organically develops novel pathways
 5. Search results become more creative/unexpected
+
+---
 
 ## Emergent Social Network
 

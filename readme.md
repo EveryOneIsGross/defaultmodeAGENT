@@ -1,14 +1,22 @@
-defaultMODE: Emergent Self-Regulating AI Agents
-
 <div align="center">
 
-![alt text](docs/assests/projectbanner.png)
+![alt text](docs/assests/pink_title.png)
 
 </div>
+
+# defaultMODE: Emergent Self-Regulating AI Agents
 
 `defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user agents exhibit confusion about their role over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into being the 'USER' after one turn.
 
 Managing an agentic prompt context is a dark art. This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
+
+---
+
+<div align="center">
+
+![alt text](docs/assests/flow.png)
+
+</div>
 
 ---
 
@@ -53,6 +61,10 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
     *   **JSONL Logging:**  Logs all interactions for debugging, analytics, and compliance.
     *   **SQLite Database:**  Provides an operational layer for querying and analyzing interaction data.
 
+<div align="center">
+<iframe src="docs/assests/dmn-network-vis.html" width="100%" height="500px" frameborder="0"></iframe>
+</div>
+
 **Getting Started**
 
 1.  **Clone:** `git clone https://github.com/everyoneisgross/defaultmodeAGENT && cd defaultmodeAGENT`
@@ -84,24 +96,24 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
   init: {
     'theme': 'base',
     'themeVariables': {
-      'primaryColor': '#FF8800',
-      'primaryTextColor': '#FF8800',
-      'primaryBorderColor': '#FF8800',
-      'lineColor': '#FF8800',
-      'secondaryColor': 'black',
-      'tertiaryColor': 'black',
-      'backgroundColor': '#000000',
-      'background': '#000000',
-      'nodeBorder': '#FF8800',
-      'textColor': '#FF8800',
-      'mainBkg': '#000000',
-      'edgeLabelBackground': '#000000',
-      'clusterBkg': 'black',
-      'clusterBorder': '#FF8800',
-      'titleColor': '#FF8800',
-      'fontFamily': 'monospace',
-      'noteBackgroundColor': '#222222',
-      'noteBorderColor': '#FF8800'
+      'primaryColor': '#ff9c9c',
+      'primaryTextColor': '#000000',
+      'primaryBorderColor': '#000000',
+      'lineColor': '#000000',
+      'secondaryColor': '#ff9c9c',
+      'tertiaryColor': '#ff9c9c',
+      'backgroundColor': '#ff9c9c',
+      'background': '#ff9c9c',
+      'nodeBorder': '#000000',
+      'textColor': '#000000',
+      'mainBkg': '#ff9c9c',
+      'edgeLabelBackground': '#ff9c9c',
+      'clusterBkg': '#ff9c9c',
+      'clusterBorder': '#000000',
+      'titleColor': '#000000',
+      'fontFamily': 'Courier New, Courier, monospace',
+      'noteBackgroundColor': '#ff9c9c',
+      'noteBorderColor': '#000000'
     }
   }
 }%%
@@ -234,6 +246,12 @@ The name `defaultMODE` reflects two key concepts:
 It serves as a "default" template—a modular foundation for building agents without reinventing core systems while providing sensible defaults with room for personalization. However, the name mostly references the human Default Mode Network (DMN)—brain regions active during rest and introspection. Like its neurological counterpart, our framework enables background cognitive processing where the agent homeostically regulates its memory space through term pruning and connection refinement. This self-regulation prevents memory bloat while preserving critical knowledge, allowing for emergent cognitive development that mimics human "mind-wandering" during idle periods.
 
 ---
+
+<div align="center">
+
+![alt text](docs/assests/pink_banner.png)
+
+</div>
 
 # Further Reading:
 

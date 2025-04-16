@@ -37,16 +37,17 @@ class DMNProcessor:
         # Thought generation parameters
         self.temperature = 0.7  # Base creative temperature
         self.amygdala_response = 50  # Default intensity
-        self.combination_threshold = 0.2  # Minimum relevance score for memory combinations
+        self.combination_threshold = 0.1  # Minimum relevance score for memory combinations
         
         # Memory decay settings
-        self.decay_rate = 0.0  # Rate at which used memory weights decrease, this stays in memory but isn't persisted between sessions
+        self.decay_rate = 0.1  # Rate at which used memory weights decrease, this stays in memory but isn't persisted between sessions
         self.memory_weights = defaultdict(lambda: defaultdict(lambda: 1.0))  # user_id -> memory -> weight
-        self.top_k = 16  # Top k memories to consider for combination
+        self.top_k = 24  # Top k memories to consider for combination
 
         # Fuzzy matching settings
-        self.fuzzy_overlap_threshold = 60  # Minimum fuzzy overlap threshold for memory combination
-        self.fuzzy_search_threshold = 80  # Minimum fuzzy search threshold for term matching
+        # These need adding to the configs presets
+        self.fuzzy_overlap_threshold = 75  # Minimum fuzzy overlap threshold for memory combination
+        self.fuzzy_search_threshold = 75  # Minimum fuzzy search threshold for term matching
         
         # Memory context compression settings
         self.max_memory_length = 64  # Maximum length of a memory to display this is for formatting only it seems atm
@@ -54,9 +55,10 @@ class DMNProcessor:
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
         
         # Mode presets
+        # These need adding to the individual bot initialisation
         self.modes = {
             "forgetful": {
-                "combination_threshold": 0.1,  # Lower threshold = more memories combined
+                "combination_threshold": 0.01,  # Lower threshold = more memories combined
                 "decay_rate": 0.8,            # High decay = aggressive forgetting
                 "top_k": 64                  # More memories considered
             },
@@ -339,8 +341,22 @@ class DMNProcessor:
             user_name=user_name
         )
         
-        # Add personality temperature scaling based on memory density
-        new_intensity = min(100, max(1, int(50 * max(0.4, 1.0 - (min(len(related_memories), 20) / 20) * 0.6))))
+        # Adapt original method: personality temperature scaling based on memory density relative to top_k
+        num_results = len(related_memories)
+
+        if self.top_k > 0:
+            # Calculate density: recalled memories / max requested memories (top_k)
+            # No cap on num_results here, unlike the original min(..., 20)
+            density = num_results / self.top_k
+            # Calculate multiplier using the original formula structure (density replaces capped_ratio/20)
+            intensity_multiplier = max(0.01, 1.0 - (density * 0.8))
+        else:
+            # Default to max intensity if top_k is 0 (edge case)
+            # Corresponds to density = 0 in the formula
+            intensity_multiplier = 1.0 
+            
+        # Calculate final intensity using the exact original clamping/scaling
+        new_intensity = min(100, max(0, int(100 * intensity_multiplier)))
         
         # Update both DMN and global state
         self.amygdala_response = new_intensity
