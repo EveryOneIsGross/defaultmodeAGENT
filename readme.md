@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center" style="pointer-events: none;">
 
 <img src="docs/assests/pink_title.png" alt="title" width="75%" style="image-rendering: pixelated;">
 
@@ -223,7 +223,7 @@ It serves as a "default" template—a modular foundation for building agents wit
 
 <div align="center">
 
-<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;">
+<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;" style="pointer-events: none;">
 
 </div>
 
