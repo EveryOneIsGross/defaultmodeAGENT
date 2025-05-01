@@ -13,10 +13,20 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
 ---
 
 
-<div align="center">
-
-<img src="docs/assests/dmn-visualise.gif"  alt="dmn demo" width="50%">
-
+<div align="center" style="display: flex; justify-content: center; gap: 2rem; align-items: center; margin: 2rem 0;">
+    <div style="flex: 1;">
+        <img src="docs/assests/dmn-visualise.gif" alt="dmn demo" width="100%" style="image-rendering: pixelated;">
+    </div>
+    <div style="flex: 1; text-align: left; padding: 1rem;">
+        <p>Unlike static memory systems, the DMN actively evolves through autonomous background processing:</p>
+        <ul>
+            <li>Continuous memory refinement through term pruning and connection weighting</li>
+            <li>Dynamic temperature scaling based on memory density and amygdala response</li>
+            <li>Homeostatic regulation preventing memory bloat while preserving critical knowledge</li>
+            <li>Real-time semantic relationship discovery through fuzzy matching and temporal parsing</li>
+            <li>Self-regulating modes (forgetful, homeostatic, conservative) for adaptive behavior</li>
+        </ul>
+    </div>
 </div>
 
 
