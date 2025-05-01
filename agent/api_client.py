@@ -15,6 +15,9 @@ import base64
 from io import BytesIO
 from PIL import Image
 import mimetypes
+from google import genai
+from google.genai import types
+import asyncio
 
 # Initialize colorama
 init(autoreset=True)
@@ -54,6 +57,10 @@ def initialize_api_client(args):
     elif api.api_type == 'vllm':
         api.api_base = os.getenv('VLLM_API_BASE', 'http://localhost:4000')
         api.model_name = args.model or os.getenv('VLLM_MODEL_NAME', 'hermes-testing/Hermes-3-Pro-RC2-e4')
+    elif api.api_type == 'gemini':
+        api.api_key = os.getenv('GEMINI_API_KEY')
+        api.model_name = args.model or os.getenv('GEMINI_MODEL_NAME', 'gemini-2.0-flash-thinking-exp-01-21')
+        api.gemini_client = genai.Client(api_key=api.api_key)
     else:
         raise ValueError(f"Unsupported API type: {api.api_type}")
 
@@ -82,12 +89,37 @@ def encode_image(image_path):
         img.save(buffered, format="JPEG", quality=95)
         return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-def prepare_image_content(prompt: str, image_paths: list, api_type: str) -> dict:
-    """Prepare image content based on API requirements"""
+def prepare_image_content(prompt: str, image_paths: list, api_type: str) -> list:
+    """Prepare image content based on API requirements. Returns a list.
+
+    For Gemini, returns a list containing the prompt string and PIL Image objects.
+    For other APIs, returns a formatted list/dictionary as required by their respective call functions.
+    """
     if not image_paths:
+        # Return prompt in a list if no images, to maintain list type consistency? No, call_api expects str if no images.
         return prompt
 
-    base64_images = [encode_image(path) for path in image_paths]
+    if api_type == 'gemini':
+        # Gemini: Load images as PIL objects
+        content_parts = [prompt] # Start with the text prompt
+        for path in image_paths:
+            try:
+                img = Image.open(path)
+                img.load() # Load image data to catch errors early
+                 # Optional: Add resizing or format conversion here if needed globally for Gemini
+                 # Example: Convert to RGB if not already
+                 # if img.mode != 'RGB':
+                 #     img = img.convert('RGB')
+                content_parts.append(img)
+            except Exception as e:
+                logging.error(f"Error opening or loading image {path} for Gemini: {e}")
+                # Decide how to handle errors: skip image, raise exception, etc.
+                # Skipping for now:
+                continue
+        return content_parts
+
+    # --- Handling for other APIs (remains the same) --- 
+    base64_images = [encode_image(path) for path in image_paths] # Encode only if not Gemini
     
     if api_type == 'anthropic':
         content = [{"type": "text", "text": prompt}]
@@ -125,8 +157,10 @@ def prepare_image_content(prompt: str, image_paths: list, api_type: str) -> dict
                 }
             }
         ]
-    
+        
     else:
+        # This case should ideally not be reached if checks are done earlier,
+        # but serves as a fallback.
         raise ValueError(f"Unsupported API type for image handling: {api_type}")
 
 def update_api_temperature(intensity: int) -> None:
@@ -167,6 +201,8 @@ async def call_api(prompt, context="", system_prompt="", conversation_id=None, t
             response = await call_anthropic_api(formatted_content, context, system_prompt, current_temp, is_image)
         elif api.api_type == 'vllm':
             response = await call_vllm_api(formatted_content, context, system_prompt, current_temp)
+        elif api.api_type == 'gemini':
+            response = await call_gemini_api(formatted_content, context, system_prompt, current_temp, is_image)
         else:
             raise ValueError(f"Unsupported API type: {api.api_type}")
 
@@ -404,15 +440,72 @@ async def get_embeddings(text, provider=None, model=None):
     else:
         raise ValueError(f"Embeddings not supported for provider: {embed_provider}")
 
-
-
+async def call_gemini_api(content, context, system_prompt, temperature, is_image):
+    """Call Google Gemini API with support for text and image content.
+    
+    Args:
+        content: Message content or image content
+        context: Context string
+        system_prompt: System prompt
+        temperature: Temperature setting
+        is_image: Whether content includes images
+    """
+    logging.info(f"Calling Gemini API - Model: {api.model_name}, Temperature: {temperature:.2f}")
+    
+    try:
+        # Prepare content parts - The 'content' argument is now expected to be 
+        # a list containing the prompt string and PIL.Image objects for Gemini.
+        parts = []
+        
+        # Add system prompt and context if provided (as text parts)
+        if system_prompt:
+            parts.append(system_prompt)
+        if context:
+            parts.append(context)
+            
+        # Add main content (text and images from the list)
+        if isinstance(content, list):
+            for item in content:
+                # Directly append text strings or PIL Image objects
+                if isinstance(item, str) or isinstance(item, Image.Image):
+                    parts.append(item)
+                else:
+                    # Log or handle unexpected item types in the list
+                    logging.warning(f"Unexpected item type in Gemini content list: {type(item)}")
+        elif isinstance(content, str):
+             # Handle case where only text prompt was passed (no images)
+             parts.append(content)
+        else:
+             raise ValueError("Invalid content format for Gemini API call")
+            
+        # Create content configuration
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=0.95,
+            top_k=64,
+            max_output_tokens=65536,
+            response_mime_type="text/plain"
+        )
+        
+        # Generate content asynchronously using asyncio.to_thread
+        response = await asyncio.to_thread(
+            api.gemini_client.models.generate_content,
+            model=api.model_name,
+            contents=parts,
+            config=config
+        )
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        logging.error(f"Gemini API error: {str(e)}")
+        raise Exception(f"Gemini API call failed: {str(e)}")
 
 if __name__ == "__main__":
     import argparse
-    import asyncio
     
     parser = argparse.ArgumentParser(description='Multi-API LLM Client')
-    parser.add_argument('--api', required=True, choices=['ollama', 'openai', 'anthropic', 'vllm'],
+    parser.add_argument('--api', required=True, choices=['ollama', 'openai', 'anthropic', 'vllm', 'gemini'],
                       help='API type to use')
     parser.add_argument('--model', help='Model name (optional)')
     # Add other arguments as needed

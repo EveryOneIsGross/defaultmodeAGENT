@@ -4,7 +4,9 @@ from discord.ext import commands
 
 import asyncio
 import os
-
+import requests
+from requests.exceptions import RequestException, Timeout, SSLError
+from bs4 import BeautifulSoup
 import mimetypes
 import json
 import yaml
@@ -15,8 +17,6 @@ import time
 import argparse
 import threading
 import re
-
-# from collections import defaultdict, Counter
 
 # Discord Format Handling
 from discord_utils import strip_role_prefixes, sanitize_mentions, format_discord_mentions
@@ -52,6 +52,8 @@ import traceback
 # import tools
 from tools.discordSUMMARISER import ChannelSummarizer
 from tools.discordGITHUB import GitHubRepo, RepoIndex, process_repo_contents, repo_processing_event
+from tools.webSCRAPE import scrape_webpage
+
 
 # import memory module
 from memory import UserMemoryIndex, CacheManager
@@ -116,8 +118,6 @@ def update_temperature(intensity: int) -> None:
 def currentmoment():
     return datetime.now().strftime("%H:%M [%d/%m/%y]")
 
-# username handling module
-
 # background processing module
 
 def start_background_processing_thread(repo, memory_index, max_depth=None, branch='main', channel=None):
@@ -175,6 +175,9 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
     user_id = str(message.author.id)
     user_name = message.author.name
     
+    # Extract URLs early in the flow
+    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
+    
     # Use memory_index for first interaction detection - removes cache dependency
     is_first_interaction = not bool(memory_index.user_memories.get(user_id, []))
 
@@ -195,11 +198,15 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 original = await message.channel.fetch_message(message.reference.message_id)
                 original_content = original.content.strip()
                 if original_content:
-                    # Sanitize the original message content with its own mentions
-                    combined_mentions = list(original.mentions) + list(original.channel_mentions)
-                    sanitized_original = sanitize_mentions(original_content, combined_mentions)
-                    reply_context = sanitized_original
-                    content = f"[Replying to: {sanitized_original}] {content}"
+                    # REPLY MENTIONS HANDLING TO ENSURE LLM ONLY SEES USER NAME MENTIONS NOT ID OR DISPLAY NAME
+                    # For reply context, we want consistent name references in the content
+                    for mention in original.mentions:
+                        original_content = original_content.replace(f'<@{mention.id}>', f'@{mention.name}')
+                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{mention.name}')
+                    for channel in original.channel_mentions:
+                        original_content = original_content.replace(f'<#{channel.id}>', f'#{channel.name}')
+                    reply_context = original_content
+                    content = f"[Replying to: {original_content}] {content}"
             except (discord.NotFound, discord.Forbidden):
                 pass
     
@@ -260,7 +267,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                                 reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
-                            formatted_msg += f" ({' '.join(reaction_parts)})"
+                            formatted_msg += f"\n(Discord User Reactions: {' '.join(reaction_parts)})"
                     
                     messages.append(formatted_msg)
             
@@ -282,6 +289,22 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     truncated_memory = truncate_middle(parsed_memory, max_tokens=TRUNCATION_LENGTH)
                     context += f"[Relevance: {score:.2f}] {truncated_memory}\n"
                 context += "</relevant_memories>\n"
+
+            # Process URLs if present
+            if urls:
+                url_contents = []
+                for url in urls:
+                    webpage_data = await scrape_webpage(url)
+                    if webpage_data['content_type'] != 'error':
+                        url_contents.append(f"URL Content: {url}\nTitle: {webpage_data['title']}\nDescription: {webpage_data['description']}\n\nContent:\n{webpage_data['content']}")
+                    else:
+                        await message.channel.send(f"Error scraping URL {url}: {webpage_data['error']}")
+                
+                if url_contents:
+                    context += "\nWeb Page Content:\n<web_content>\n"
+                    for content in url_contents:
+                        context += f"{truncate_middle(content, max_tokens=TRUNCATION_LENGTH)}\n"
+                    context += "</web_content>\n"
             
             prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
             prompt = prompt_formats[prompt_key].format(
@@ -353,6 +376,9 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             'error': str(e)
         }, bot_id=bot.user.name)
 
+
+
+
 async def process_files(message, memory_index, prompt_formats, system_prompts, user_message="", bot=None, temperature=TEMPERATURE):
     """Process multiple files from a Discord message, handling combinations of images and text files, including resizing large images."""
     if not getattr(bot, 'processing_enabled', True):
@@ -362,9 +388,11 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     user_id = str(message.author.id)
     user_name = message.author.name
     
-    if not message.attachments:
-        # This case should technically not be hit if called from on_message check
-        await message.channel.send("No attachments found.") 
+    # Extract URLs from message content
+    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
+    
+    if not message.attachments and not urls:
+        await message.channel.send("No attachments or URLs found.") 
         return
 
     # Track files for combined analysis
@@ -376,6 +404,19 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     # Track detected types for prompt selection
     has_images = False
     has_text = False
+
+    # Process URLs first
+    if urls:
+        for url in urls:
+            webpage_data = await scrape_webpage(url)
+            if webpage_data['content_type'] != 'error':
+                text_contents.append({
+                    'filename': f"webpage_{webpage_data['title']}",
+                    'content': f"URL: {webpage_data['url']}\nTitle: {webpage_data['title']}\nDescription: {webpage_data['description']}\n\nContent:\n{webpage_data['content']}"
+                })
+                has_text = True
+            else:
+                await message.channel.send(f"Error scraping URL {url}: {webpage_data['error']}")
 
     # Standardize mention handling
     if message.guild and message.guild.me:
@@ -702,7 +743,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
 async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800, bot=None):
     """
-    Sends a long text message by intelligently splitting it while preserving formatting.
+    Sends a long text message by treating wrapped content (code blocks, tags) as atomic units.
+    Only splits and balances wraps if a block exceeds max length.
     
     Args:
         channel: Discord channel to send messages to
@@ -713,81 +755,189 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
     if not text:
         return
         
-    chunks = []
-    current_chunk = ""
-    code_block_open = False
-    in_bullet_list = False
+    # First format all mentions in the entire text
+    guild = getattr(channel, 'guild', None)
+    formatted_text = format_discord_mentions(text, guild, 
+                                          True if bot is None else bot.mentions_enabled, 
+                                          bot)
     
-    # Remove premature balance_wraps here - let's split first
-    lines = text.split('\n')
+    # First pass: Split text into wrapped and unwrapped segments
+    segments = []
+    lines = formatted_text.split('\n')
+    current_segment = []
+    in_code_block = False
+    tag_stack = []
     
     for line in lines:
-        # Track code block state
+        # Track code blocks
         if '```' in line:
-            code_block_open = not code_block_open
-            
-        # Track bullet list state    
-        if line.strip().startswith(('- ', '* ', '+ ')):
-            in_bullet_list = True
-        elif line.strip() and not line.strip().startswith(('- ', '* ', '+ ')):
-            in_bullet_list = False
-            
-        new_chunk = current_chunk + ('\n' if current_chunk else '') + line
-        
-        if len(new_chunk) > max_length and current_chunk:
-            # Close code block if needed before balancing
-            if code_block_open:
-                current_chunk += '\n```'
-                code_block_open = False
-            
-            # Now balance wraps on the complete chunk
-            chunks.append(balance_wraps(current_chunk))
-            
-            current_chunk = line
-            
-            # Reopen code block in new chunk if needed
-            if code_block_open:
-                current_chunk = '```' + current_chunk
+            if not in_code_block:
+                # Start new code block
+                if current_segment:
+                    segments.append(('\n'.join(current_segment), False))
+                    current_segment = []
+                in_code_block = True
+            else:
+                in_code_block = False
+                current_segment.append(line)
+                segments.append(('\n'.join(current_segment), True))
+                current_segment = []
+                continue
                 
-        else:
-            current_chunk = new_chunk
+        # Track tag content
+        if not in_code_block:
+            # Count tags in line
+            opens = line.count('<')
+            closes = line.count('>')
             
-    # Handle final chunk
+            if opens > closes:
+                tag_stack.extend(['<'] * (opens - closes))
+            elif closes > opens and tag_stack:
+                tag_stack = tag_stack[:(opens - closes)]
+                
+            if tag_stack and not current_segment:
+                # Start of tagged content
+                if current_segment:
+                    segments.append(('\n'.join(current_segment), False))
+                    current_segment = []
+            elif not tag_stack and current_segment and any('<' in s or '>' in s for s in current_segment):
+                # End of tagged content
+                current_segment.append(line)
+                segments.append(('\n'.join(current_segment), True))
+                current_segment = []
+                continue
+        
+        current_segment.append(line)
+    
+    # Add any remaining content
+    if current_segment:
+        segments.append(('\n'.join(current_segment), in_code_block or bool(tag_stack)))
+    
+    # Second pass: Create chunks respecting max_length
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for content, is_wrapped in segments:
+        if is_wrapped:
+            # If wrapped content exceeds max_length, we need to balance and split
+            if len(content) > max_length:
+                # First send any accumulated unwrapped content
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                
+                # For very long lines without natural breaks, force split
+                if '\n' not in content:
+                    # Split into max_length chunks, preserving wrapping
+                    remaining = content
+                    while remaining:
+                        chunk_size = max_length - 6  # Account for wrapping
+                        if remaining.startswith('```'):
+                            chunk = remaining[:chunk_size] + '\n```'
+                            remaining = '```\n' + remaining[chunk_size:] if remaining[chunk_size:] else ''
+                        else:
+                            chunk = remaining[:chunk_size]
+                            remaining = remaining[chunk_size:]
+                        chunks.append(chunk)
+                else:
+                    # Balance and split the large wrapped content
+                    balanced = balance_wraps(content)
+                    while balanced:
+                        # Add safety check for minimum progress
+                        original_length = len(balanced)
+                        
+                        split_point = balanced.rfind('\n', 0, max_length)
+                        if split_point == -1:
+                            # If no newline found, force split at max_length - 6 (for wrapping)
+                            split_point = max_length - 6
+                        
+                        chunk = balanced[:split_point]
+                        if '```' in chunk and chunk.count('```') % 2 != 0:
+                            chunk += '\n```'
+                        chunks.append(chunk)
+                        
+                        balanced = balanced[split_point:].lstrip()
+                        
+                        # Safety check - ensure we're making progress
+                        if len(balanced) >= original_length:
+                            # Force split if we're stuck
+                            chunks.append(balanced[:max_length-6])
+                            balanced = balanced[max_length-6:].lstrip()
+                        
+                        # Emergency break if balanced is not getting smaller
+                        if len(balanced) < 6:  # Minimum viable remainder
+                            if balanced:
+                                chunks.append(balanced)
+                            break
+                            
+                        if '```' in chunk and chunk.endswith('```') and balanced:
+                            balanced = '```\n' + balanced
+            else:
+                # Check if adding wrapped content would exceed max_length
+                if current_length + len(content) + 1 > max_length:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = [content]
+                    current_length = len(content)
+                else:
+                    current_chunk.append(content)
+                    current_length += len(content) + 1
+        else:
+            # For unwrapped content, split on line boundaries
+            lines = content.split('\n')
+            for line in lines:
+                # Handle very long lines without spaces
+                while len(line) > max_length:
+                    if current_chunk:
+                        chunks.append('\n'.join(current_chunk))
+                        current_chunk = []
+                    chunks.append(line[:max_length])
+                    line = line[max_length:]
+                    current_length = 0
+                
+                if current_length + len(line) + 1 > max_length:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = [line]
+                    current_length = len(line)
+                else:
+                    current_chunk.append(line)
+                    current_length += len(line) + 1
+    
+    # Add final chunk
     if current_chunk:
-        if code_block_open:
-            current_chunk += '\n```'
-        # Balance wraps only on the final complete chunk
-        chunks.append(balance_wraps(current_chunk))
+        chunks.append('\n'.join(current_chunk))
     
     # Send chunks with rate limit handling
     for chunk in chunks:
+        if not chunk.strip():  # Skip empty chunks
+            continue
+            
         max_retries = 3
         retry_count = 0
         base_delay = 1.0
         
         while retry_count < max_retries:
             try:
-                # Remove sanitize_mentions call here, pass guild directly to format_discord_mentions
-                formatted_chunk = format_discord_mentions(chunk, channel.guild, 
-                                                         True if bot is None else bot.mentions_enabled, 
-                                                         bot)
-                
-                await channel.send(formatted_chunk.strip())
-                await asyncio.sleep(0.5)
+                await channel.send(chunk.strip())
+                await asyncio.sleep(0.5)  # Small delay between messages
                 break
                 
             except discord.HTTPException as e:
                 if e.status == 429:  # Rate limit hit
                     retry_count += 1
                     if retry_count == max_retries:
-                        bot.logger.error("Max retries reached for message chunk. Skipping.")
+                        if bot and bot.logger:
+                            bot.logger.error("Max retries reached for message chunk. Skipping.")
                         break
                         
                     retry_after = getattr(e, 'retry_after', base_delay * (2 ** retry_count))
-                    bot.logger.warning(f"Rate limited. Waiting {retry_after:.2f}s before retry {retry_count}/{max_retries}")
+                    if bot and bot.logger:
+                        bot.logger.warning(f"Rate limited. Waiting {retry_after:.2f}s before retry {retry_count}/{max_retries}")
                     await asyncio.sleep(retry_after)
                 else:
-                    bot.logger.error(f"Error sending message chunk: {str(e)}")
+                    if bot and bot.logger:
+                        bot.logger.error(f"Error sending message chunk: {str(e)}")
                     break
 
 async def generate_and_save_thought(memory_index, user_id, user_name, memory_text, prompt_formats, system_prompts, bot):
@@ -1146,18 +1296,29 @@ def setup_bot(prompt_path=None, bot_id=None):
         if message.author == bot.user:
             return
 
-        # Check if the message is a command
-        ctx = await bot.get_context(message)
-        if ctx.valid:
-            await bot.invoke(ctx)
+        # Extract the command content if bot is mentioned (only in channels)
+        command_content = None
+        if not isinstance(message.channel, discord.DMChannel):
+            if message.content.startswith(f'<@{bot.user.id}>') or message.content.startswith(f'<@!{bot.user.id}>'):
+                # Split content after mention
+                parts = message.content.split(maxsplit=1)
+                if len(parts) > 1:
+                    command_content = parts[1]
+        
+        # Process commands
+        if command_content and command_content.startswith('!'):
+            # Create a copy of the message with modified content
+            message.content = command_content
+            await bot.process_commands(message)
+            return
+        elif isinstance(message.channel, discord.DMChannel) and message.content.startswith('!'):
+            # In DMs, process commands directly without mention
+            await bot.process_commands(message)
             return
 
-        # Regular message processing
+        # Regular message processing for mentions or DMs
         if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
             if message.attachments:
-                # REMOVED Size check here - delegate fully to process_files
-                # attachment = message.attachments[0]
-                # if attachment.size <= 1000000:  # 1MB limit
                 try:
                     await process_files(
                         message=message,
@@ -1171,13 +1332,11 @@ def setup_bot(prompt_path=None, bot_id=None):
                     await message.channel.send(f"Error processing file(s): {str(e)}")
                     bot.logger.error(f"Error during process_files call from on_message: {str(e)}")
                     bot.logger.error(traceback.format_exc())
-                # else:
-                #     await message.channel.send("File is too large. Please upload a file smaller than 1 MB.")
             else:
                 await process_message(message, user_memory_index, prompt_formats, system_prompts, github_repo, is_command=False)
         
     @bot.command(name='persona')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_guild)
+    @commands.check(lambda ctx: config.discord.has_command_permission('persona', ctx))
     async def set_amygdala_response(ctx, intensity: int = None):
         """Set or get the AI's amygdala arousal (0-100). The intensity can be steered through in context prompts and it also adjusts the temperature of the API calls."""
         if intensity is None:
@@ -1200,7 +1359,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.logger.warning(f"Invalid amygdala arousal attempted: {intensity}")
 
     @bot.command(name='add_memory')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    @commands.check(lambda ctx: config.discord.has_command_permission('add_memory', ctx))
     async def add_memory(ctx, *, memory_text):
         """Add a new memory to the AI."""
         user_memory_index.add_memory(str(ctx.author.id), memory_text)
@@ -1214,7 +1373,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         }, bot_id=bot.user.name)
 
     @bot.command(name='clear_memories')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    @commands.check(lambda ctx: config.discord.has_command_permission('clear_memories', ctx))
     async def clear_memories(ctx):
         """Clear all memories of the invoking user."""
         user_id = str(ctx.author.id)
@@ -1228,6 +1387,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         }, bot_id=bot.user.name)
 
     @bot.command(name='analyze_file')
+    @commands.check(lambda ctx: config.discord.has_command_permission('analyze_file', ctx))
     async def analyze_file(ctx):
         """Analyze an uploaded file."""
         if not ctx.message.attachments:
@@ -1256,7 +1416,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.logger.error(traceback.format_exc())
 
     @bot.command(name='summarize')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    @commands.check(lambda ctx: config.discord.has_command_permission('summarize', ctx))
     async def summarize(ctx, *, args=None):
         """Summarize the last n messages in a specified channel and send the summary to DM."""
         try:
@@ -1341,21 +1501,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.logger.error(f"Error in channel summarization: {str(e)}")
 
     @bot.command(name='index_repo')
-    @commands.check(lambda ctx: (
-        isinstance(ctx.channel, discord.DMChannel) and any(
-            guild.get_member(ctx.author.id) and (
-                guild.get_member(ctx.author.id).guild_permissions.administrator or
-                guild.get_member(ctx.author.id).guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in guild.get_member(ctx.author.id).roles)
-            ) for guild in ctx.bot.guilds
-        ) or (
-            not isinstance(ctx.channel, discord.DMChannel) and (
-                ctx.author.guild_permissions.administrator or
-                ctx.author.guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in ctx.author.roles)
-            )
-        )
-    ))
+    @commands.check(lambda ctx: config.discord.has_command_permission('index_repo', ctx))
     async def index_repo(ctx, option: str = None, branch: str = 'main'):
         """Index the GitHub repository contents, list indexed files, or check indexing status."""
         if not bot.github_enabled:
@@ -1412,7 +1558,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                 bot.logger.error(error_message)
                 
     @bot.command(name='repo_file_chat')
-    @commands.check(lambda ctx: bot.github_enabled)
+    @commands.check(lambda ctx: config.discord.has_command_permission('repo_file_chat', ctx))
     async def repo_file_chat(ctx, *, input_text: str = None):
         """Chat about a specific file in the GitHub repository."""
         if not input_text:
@@ -1550,7 +1696,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.logger.error(error_message)
 
     @bot.command(name='ask_repo')
-    @commands.check(lambda ctx: bot.github_enabled)
+    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
     async def ask_repo(ctx, *, question: str = None):
         """Chat about the GitHub repository contents."""
         if not question:
@@ -1650,10 +1796,9 @@ def setup_bot(prompt_path=None, bot_id=None):
                 system_prompts=system_prompts,
                 bot=bot
             )
-            
-        
 
     @bot.command(name='search_memories')
+    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
     async def search_memories(ctx, *, query):
         """Test the memory search function."""
         is_dm = isinstance(ctx.channel, discord.DMChannel)
@@ -1688,7 +1833,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             await ctx.send(current_chunk)
 
     @bot.command(name='dmn')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_guild)
+    @commands.check(lambda ctx: config.discord.has_command_permission('dmn', ctx))
     async def dmn_control(ctx, action: str = None):
         """Control the DMN processor. Usage: !dmn <start|stop|status>"""
         if not action:
@@ -1715,75 +1860,29 @@ def setup_bot(prompt_path=None, bot_id=None):
             await ctx.send("Invalid action. Please use: start, stop, or status")
 
     @bot.command(name='kill')
+    @commands.check(lambda ctx: config.discord.has_command_permission('kill', ctx))
     async def kill_tasks(ctx):
         """Gracefully terminate API processing while maintaining Discord connection"""
-        # Check for either server management permissions or bot management role
-        has_permission = False
-        
-        if isinstance(ctx.channel, discord.DMChannel):
-            # Check mutual guilds for management permissions
-            for guild in bot.guilds:
-                member = guild.get_member(ctx.author.id)
-                if member and (
-                    member.guild_permissions.administrator or
-                    member.guild_permissions.manage_guild or
-                    any(role.name == DISCORD_BOT_MANAGER_ROLE for role in member.roles)
-                ):
-                    has_permission = True
-                    break
-        else:
-            # In guild channel, check current guild permissions
-            has_permission = (
-                ctx.author.guild_permissions.administrator or
-                ctx.author.guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in ctx.author.roles)
-            )
-
-        if has_permission:
-            try:
-                bot.processing_enabled = False
-                if bot.dmn_processor.enabled:
-                    await bot.dmn_processor.stop()
-                await ctx.send("Processing disabled. Ongoing API calls will complete but no new calls will be initiated.")
-                bot.logger.info(f"Kill command initiated by {ctx.author.name} (ID: {ctx.author.id})")
-            except Exception as e:
-                await ctx.send(f"Error in kill command: {str(e)}")
-                bot.logger.error(f"Kill command error: {str(e)}")
-        else:
-            await ctx.send("Kill command requires either server management permissions or a Developer role.")
+        try:
+            bot.processing_enabled = False
+            if bot.dmn_processor.enabled:
+                await bot.dmn_processor.stop()
+            await ctx.send("Processing disabled. Ongoing API calls will complete but no new calls will be initiated.")
+            bot.logger.info(f"Kill command initiated by {ctx.author.name} (ID: {ctx.author.id})")
+        except Exception as e:
+            await ctx.send(f"Error in kill command: {str(e)}")
+            bot.logger.error(f"Kill command error: {str(e)}")
 
     @bot.command(name='resume')
+    @commands.check(lambda ctx: config.discord.has_command_permission('resume', ctx))
     async def resume_tasks(ctx):
         """Resume API processing"""
-        # Check for either server management permissions or bot management role
-        has_permission = False
-        
-        if isinstance(ctx.channel, discord.DMChannel):
-            for guild in bot.guilds:
-                member = guild.get_member(ctx.author.id)
-                if member and (
-                    member.guild_permissions.administrator or
-                    member.guild_permissions.manage_guild or
-                    any(role.name == DISCORD_BOT_MANAGER_ROLE for role in member.roles)
-                ):
-                    has_permission = True
-                    break
-        else:
-            has_permission = (
-                ctx.author.guild_permissions.administrator or
-                ctx.author.guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in ctx.author.roles)
-            )
-
-        if has_permission:
-            bot.processing_enabled = True
-            await ctx.send("Processing resumed.")
-            bot.logger.info(f"Processing resumed by {ctx.author.name} (ID: {ctx.author.id})")
-        else:
-            await ctx.send("Resume command requires either server management permissions or a Developer role.")
+        bot.processing_enabled = True
+        await ctx.send("Processing resumed.")
+        bot.logger.info(f"Processing resumed by {ctx.author.name} (ID: {ctx.author.id})")
 
     @bot.command(name='mentions')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    @commands.check(lambda ctx: config.discord.has_command_permission('mentions', ctx))
     async def toggle_mentions(ctx, state: str = None):
         """Toggle or check mention conversion state. Usage: !mentions <on|off|status>"""
         if state is None or state.lower() == 'status':
@@ -1801,21 +1900,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             await ctx.send("Invalid state. Use: on/off/status")
 
     @bot.command(name='get_logs')
-    @commands.check(lambda ctx: (
-        isinstance(ctx.channel, discord.DMChannel) and any(
-            guild.get_member(ctx.author.id) and (
-                guild.get_member(ctx.author.id).guild_permissions.administrator or
-                guild.get_member(ctx.author.id).guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in guild.get_member(ctx.author.id).roles)
-            ) for guild in ctx.bot.guilds
-        ) or (
-            not isinstance(ctx.channel, discord.DMChannel) and (
-                ctx.author.guild_permissions.administrator or
-                ctx.author.guild_permissions.manage_guild or
-                any(role.name == DISCORD_BOT_MANAGER_ROLE for role in ctx.author.roles)
-            )
-        )
-    ))
+    @commands.check(lambda ctx: config.discord.has_command_permission('get_logs', ctx))
     async def get_logs(ctx):
         """Download bot logs (Permissions required)."""
         try:
@@ -1881,7 +1966,7 @@ def setup_bot(prompt_path=None, bot_id=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the Discord bot with selected API and model')
-    parser.add_argument('--api', choices=['ollama', 'openai', 'anthropic', 'vllm'], 
+    parser.add_argument('--api', choices=['ollama', 'openai', 'anthropic', 'vllm', 'gemini'], 
                         default='ollama', help='Choose the API to use (default: ollama)')
     parser.add_argument('--model', type=str, 
                         help='Specify the model to use. If not provided, defaults will be used based on the API.')

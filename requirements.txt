@@ -16,3 +16,4 @@ python-dotenv==1.0.1
 PyYAML==6.0.2
 tiktoken==0.8.0
 uvicorn==0.34.0
+beautifulsoup4==4.12.3

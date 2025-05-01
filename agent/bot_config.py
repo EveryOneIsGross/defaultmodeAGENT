@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Set, Dict
 from logger import BotLogger
 from datetime import datetime
+import discord
 
 # Force reload of .env file
 if os.path.exists('.env'):
@@ -29,12 +30,102 @@ class APIConfig(BaseModel):
 class DiscordConfig(BaseModel):
     """Discord-specific configuration"""
     channel_id: str = Field(default=os.getenv('DISCORD_CHANNEL_ID'))
-    bot_manager_role: str = Field(default='Developer')
+    bot_manager_role: str = Field(default='Ally')
+    
+    # Command permission groups - properly tiered
+    system_commands: Set[str] = Field(default={
+        'kill',
+        'resume',
+        'get_logs',
+        'dmn',
+        'persona'
+    })
+    
+    management_commands: Set[str] = Field(default={
+        'add_memory',
+        'clear_memories',
+        'search_memories',
+        'mentions',
+        'index_repo'
+    })
+    
+    general_commands: Set[str] = Field(default={
+        'summarize',
+        'ask_repo',
+        'repo_file_chat',
+        'analyze_file'
+    })
+
+    def has_command_permission(self, command_name: str, ctx) -> bool:
+        """Check if user has permission to use a command.
+        
+        Args:
+            command_name: Name of the command being checked
+            ctx: Discord command context
+            
+        Returns:
+            bool: True if user has permission to use command
+        """
+        # Check if command exists in any permission group
+        if command_name not in (
+            self.system_commands | 
+            self.management_commands | 
+            self.general_commands
+        ):
+            return False
+
+        # General commands are always allowed
+        if command_name in self.general_commands:
+            return True
+
+        # For DM channels, check permissions across all mutual guilds
+        if isinstance(ctx.channel, discord.DMChannel):
+            has_admin = False
+            has_ally = False
+            
+            for guild in ctx.bot.guilds:
+                member = guild.get_member(ctx.author.id)
+                if not member:
+                    continue
+                    
+                # Check admin permissions
+                if (member.guild_permissions.administrator or 
+                    member.guild_permissions.manage_guild):
+                    has_admin = True
+                    break
+                    
+                # Check ally role
+                if any(role.name == self.bot_manager_role for role in member.roles):
+                    has_ally = True
+            
+            # System commands require admin permissions
+            if command_name in self.system_commands:
+                return has_admin
+                
+            # Management commands require either admin or ally role
+            if command_name in self.management_commands:
+                return has_admin or has_ally
+                
+            return False
+
+        # For guild channels, check current guild permissions
+        if (ctx.author.guild_permissions.administrator or 
+            ctx.author.guild_permissions.manage_guild):
+            return True
+            
+        # Check ally role for management commands
+        if (command_name in self.management_commands and
+            any(role.name == self.bot_manager_role for role in ctx.author.roles)):
+            return True
+
+        return False
 
 class FileConfig(BaseModel):
     """File handling configuration"""
     allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
     allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
+    # add audio extension for voice message module expansion
+    allowed_audio_extensions: Set[str] = Field(default={'.mp3', '.wav', '.ogg', '.m4a'})
 
 class SearchConfig(BaseModel):
     """Search and indexing configuration"""
@@ -44,7 +135,7 @@ class SearchConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
-    max_history: int = Field(default=24)
+    max_history: int = Field(default=8)
     truncation_length: int = Field(default=256)
     harsh_truncation_length: int = Field(default=64)
 

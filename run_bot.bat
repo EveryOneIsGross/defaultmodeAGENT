@@ -20,12 +20,13 @@ echo 1. Ollama (Local)
 echo 2. OpenAI
 echo 3. Anthropic
 echo 4. vLLM (Local)
+echo 5. Gemini
 echo ----------------------
-echo 5. Back to Bot Selection
-echo 6. Exit
+echo 6. Back to Bot Selection
+echo 7. Exit
 echo.
 
-set /p choice="Enter your choice (1-6): "
+set /p choice="Enter your choice (1-7): "
 
 if "!choice!"=="1" (
     cls
@@ -82,10 +83,22 @@ if "!choice!"=="4" (
 )
 
 if "!choice!"=="5" (
-    goto menu
+    cls
+    echo Selected: Gemini
+    set /p model="Enter model name (or press Enter for default): "
+    if "!model!"=="" (
+        python agent/discord_bot.py --api gemini --bot-name !bot_name!
+    ) else (
+        python agent/discord_bot.py --api gemini --model !model! --bot-name !bot_name!
+    )
+    goto end
 )
 
 if "!choice!"=="6" (
+    goto menu
+)
+
+if "!choice!"=="7" (
     echo Exiting...
     goto end
 )

@@ -37,20 +37,23 @@ class DMNProcessor:
         # Thought generation parameters
         self.temperature = 0.7  # Base creative temperature
         self.amygdala_response = 50  # Default intensity
-        self.combination_threshold = 0.1  # Minimum relevance score for memory combinations
+        self.combination_threshold = 0.2  # Minimum relevance score for memory combinations
         
         # Memory decay settings
         self.decay_rate = 0.1  # Rate at which used memory weights decrease, this stays in memory but isn't persisted between sessions
         self.memory_weights = defaultdict(lambda: defaultdict(lambda: 1.0))  # user_id -> memory -> weight
         self.top_k = 24  # Top k memories to consider for combination
 
+        # Retrived Memory Density Temperature Multiplier settings
+        self.density_multiplier = 2.1  # Multiplier for density-based temperature scaling
+
         # Fuzzy matching settings
         # These need adding to the configs presets
-        self.fuzzy_overlap_threshold = 75  # Minimum fuzzy overlap threshold for memory combination
-        self.fuzzy_search_threshold = 75  # Minimum fuzzy search threshold for term matching
+        self.fuzzy_overlap_threshold = 80 # Minimum fuzzy overlap threshold for memory combination
+        self.fuzzy_search_threshold = 50  # Minimum fuzzy search threshold for term matching
         
         # Memory context compression settings
-        self.max_memory_length = 64  # Maximum length of a memory to display this is for formatting only it seems atm
+        self.max_memory_length = 64  # Maximum length of a memory based on the truncate_middle function
         
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
         
@@ -60,7 +63,7 @@ class DMNProcessor:
             "forgetful": {
                 "combination_threshold": 0.01,  # Lower threshold = more memories combined
                 "decay_rate": 0.8,            # High decay = aggressive forgetting
-                "top_k": 64                  # More memories considered
+                "top_k": 24                  # More memories considered
             },
             "homeostatic": {
                 "combination_threshold": 0.2,  # Balanced threshold
@@ -165,15 +168,17 @@ class DMNProcessor:
                 user = await self.bot.fetch_user(int(user_id))
                 user_name = strip_role_prefixes(user.name) if user else "Unknown User"
             except Exception as e:
-                self.logger.error(f"Failed to fetch username for {user_id}: {str(e)}")
                 user_name = "Unknown User"
             
-            # Query related memories
-            related_memories = self.memory_index.search(
-                seed_memory,
-                user_id=user_id,
-                k=self.top_k
-            )
+            # Run memory search in executor to prevent blocking
+            try:
+                loop = asyncio.get_event_loop()
+                related_memories = await loop.run_in_executor(
+                    None,
+                    lambda: self.memory_index.search(seed_memory, user_id=user_id, k=self.top_k)
+                )
+            except Exception as e:
+                continue
             
             # Filter out the seed memory from results
             related_memories = [
@@ -341,7 +346,7 @@ class DMNProcessor:
             user_name=user_name
         )
         
-        # Adapt original method: personality temperature scaling based on memory density relative to top_k
+        # personality temperature scaling based on memory density relative to top_k
         num_results = len(related_memories)
 
         if self.top_k > 0:
@@ -349,7 +354,7 @@ class DMNProcessor:
             # No cap on num_results here, unlike the original min(..., 20)
             density = num_results / self.top_k
             # Calculate multiplier using the original formula structure (density replaces capped_ratio/20)
-            intensity_multiplier = max(0.01, 1.0 - (density * 0.8))
+            intensity_multiplier = max(0.01, 1.0 - (density * self.density_multiplier))
         else:
             # Default to max intensity if top_k is 0 (edge case)
             # Corresponds to density = 0 in the formula

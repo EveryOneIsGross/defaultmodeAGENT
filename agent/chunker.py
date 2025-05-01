@@ -102,35 +102,42 @@ def clean_response(response: str) -> str:
     
     return cleaned.strip()
 
-def balance_wraps(text: str, wraps: dict[str, str] = {"{": "}", "(": ")", "[": "]", "<": ">"}) -> str:
-    """Auto-corrects unbalanced wraps in text by adding missing closers or removing orphaned wraps.
+def balance_wraps(text: str) -> str:
+    """Auto-corrects unbalanced code blocks and angle brackets.
+    Focuses only on critical wraps that could break message display or functionality.
     
     Args:
         text: String to fix
-        wraps: Dict mapping opening chars to their closing chars
     
     Returns:
-        str: Text with balanced wraps
+        str: Text with balanced code blocks and angle brackets
     """
-    stack = []
-    chars = list(text)
-    reverse_wraps = {v: k for k, v in wraps.items()}
+    # Handle code blocks first - they take precedence
+    lines = text.split('\n')
+    code_block_count = text.count('```')
+    if code_block_count % 2 != 0:
+        # If odd number of code blocks, add closing block
+        lines.append('```')
     
-    # Forward pass - handle orphaned closing wraps
+    # Now handle angle brackets
+    chars = list('\n'.join(lines))
+    stack = []
     i = 0
+    
+    # Forward pass - handle orphaned closing angle brackets
     while i < len(chars):
-        if chars[i] in wraps:
+        if chars[i] == '<':
             stack.append(i)
-        elif chars[i] in reverse_wraps:
+        elif chars[i] == '>':
             if not stack:
                 chars.pop(i)
                 continue
             stack.pop()
         i += 1
     
-    # Add missing closing wraps
+    # Add missing closing angle brackets
     while stack:
-        pos = stack.pop()
-        chars.append(wraps[chars[pos]])
+        chars.append('>')
+        stack.pop()
         
     return ''.join(chars)

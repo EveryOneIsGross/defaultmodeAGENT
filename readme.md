@@ -12,11 +12,13 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
 
 ---
 
-<div align="center" width="100%">
 
-<img src="docs/assests/dmn-visualise.gif"  alt="dmn demo" width="100%">
+<div align="center">
+
+<img src="docs/assests/dmn-visualise.gif"  alt="dmn demo" width="50%">
 
 </div>
+
 
 ---
 
@@ -223,7 +225,7 @@ It serves as a "default" template—a modular foundation for building agents wit
 
 <div align="center">
 
-<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;" style="pointer-events: none;">
+<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;">
 
 </div>
 

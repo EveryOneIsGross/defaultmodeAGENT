@@ -335,13 +335,14 @@ class UserMemoryIndex:
         Returns:
             str: Cleaned text with punctuation removed, numbers removed, and stopwords filtered
         """
-
         # Clean rogue LLM tokens
         text = text.replace("<|endoftext|>", "").replace("<|im_start|>", "").replace("<|im_end|>", "")
         text = text.lower()
-        text = text.translate(str.maketrans('', '', string.punctuation))
+        # Replace punctuation with spaces to preserve word boundaries
+        text = text.translate(str.maketrans(string.punctuation, ' ' * len(string.punctuation)))
         text = re.sub(r'\d+', '', text)
-        words = text.split()
+        # Split on whitespace and filter empty strings
+        words = [w for w in text.split() if w]
         words = [word for word in words if word not in self.stopwords]
         return ' '.join(words)
 
@@ -412,7 +413,7 @@ class UserMemoryIndex:
             similarity_threshold (float): Threshold for considering memories as duplicates
             
         Returns:
-            list: List of tuples containing (memory_text, relevance_score)
+            list: List of tuples containing (memory_text, relevance_score), where score is normalized to 0.00-1.00
         """
         cleaned_query = self.clean_text(query)
         query_words = cleaned_query.split()
@@ -428,19 +429,34 @@ class UserMemoryIndex:
         else:
             relevant_memory_ids = range(len(self.memories))
 
-        # Score memories with IDF weighting
-        for word in query_words:
-            if word in self.inverted_index:
-                df = doc_freqs[word]
-                idf = math.log((total_memories - df + 0.5) / (df + 0.5) + 1.0)
-                
-                for memory_id in self.inverted_index[word]:
-                    if memory_id in relevant_memory_ids:
-                        memory_scores[memory_id] += idf
+        # BM25-lite parameters
+        k1 = 1.2  # tf saturation curve
 
-        # Normalize scores by memory length
+        # Score memories with BM25-lite weighting
+        for word in query_words:
+            posting = [mid for mid in self.inverted_index.get(word, [])
+                      if mid in relevant_memory_ids]
+            if not posting:
+                continue
+
+            tf_counts = Counter(posting)  # collapse duplicates → tf per doc
+            df = len(tf_counts)  # docs containing word
+            idf = math.log((total_memories - df + 0.5) / (df + 0.5) + 1.0)
+
+            for mid, tf in tf_counts.items():
+                bm25_weight = idf * ((k1 + 1) * tf) / (k1 + tf)  # BM25-lite
+                memory_scores[mid] += bm25_weight
+
+        # Normalize scores by memory length and to 0.00-1.00 range
         for memory_id, score in memory_scores.items():
             memory_scores[memory_id] = score / len(self.clean_text(self.memories[memory_id]).split())
+        
+        # Get max score for normalization
+        max_score = max(memory_scores.values()) if memory_scores else 1.0
+        
+        # Normalize all scores to 0.00-1.00
+        for memory_id in memory_scores:
+            memory_scores[memory_id] /= max_score
         
         sorted_memories = sorted(memory_scores.items(), key=lambda x: x[1], reverse=True)
         

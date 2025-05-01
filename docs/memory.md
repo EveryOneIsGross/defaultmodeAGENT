@@ -106,12 +106,14 @@ memory_index.clear_user_memories(user_id="user123")
 
 ## Cache Directory Structure 
 
+```bash
 cache/
 ├── bot_name/
 │ ├── memory_index/
 │ │ ├── memory_cache.pkl
 │ ├── temp/
 │ │ └── user_specific_temp_files/
+```
 
 ## Best Practices
 

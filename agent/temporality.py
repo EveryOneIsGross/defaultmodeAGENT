@@ -3,6 +3,7 @@ from typing import Dict, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 import random
+import re
 
 class TimeFrame(Enum):
     IMMEDIATE = "immediate"     # < 5 minutes
@@ -78,6 +79,34 @@ class TemporalParser:
         """Initialize with optional reference time"""
         self.reference_time = reference_time or datetime.now()
     
+    def _parse_timestamp(self, timestamp: str) -> Optional[datetime]:
+        """Parse timestamp in format HH:MM [DD/MM/YY] or (HH:MM [DD/MM/YY])"""
+        try:
+            if isinstance(timestamp, datetime):
+                return timestamp
+                
+            if isinstance(timestamp, str):
+                # Remove any parentheses that might be present
+                timestamp = timestamp.strip('()')
+                
+                # Try direct format first (from currentmoment())
+                try:
+                    return datetime.strptime(timestamp, "%H:%M [%d/%m/%y]")
+                except ValueError:
+                    pass
+                    
+                # Try with flexible whitespace (from memory text)
+                match = re.match(r'(\d{2}):(\d{2})\s*\[(\d{2}/\d{2}/\d{2})\]', timestamp)
+                if match:
+                    hour, minute, date = match.groups()
+                    try:
+                        return datetime.strptime(f"{hour}:{minute} {date}", "%H:%M %d/%m/%y")
+                    except ValueError:
+                        pass
+            return None
+        except (ValueError, TypeError):
+            return None
+    
     def _get_timeframe(self, dt: datetime) -> TimeFrame:
         """Determine appropriate timeframe for a datetime using clear range checks."""
         time_diff = self.reference_time - dt
@@ -85,17 +114,17 @@ class TemporalParser:
         # Check ranges from smallest to largest
         if time_diff < timedelta(minutes=5):
             return TimeFrame.IMMEDIATE
-        elif time_diff < timedelta(hours=1): # 5 min <= diff < 1 hour
+        elif time_diff < timedelta(hours=1):
             return TimeFrame.RECENT
-        elif time_diff < timedelta(days=1): # 1 hour <= diff < 1 day
+        elif time_diff < timedelta(days=1):
             return TimeFrame.TODAY
-        elif time_diff < timedelta(days=2): # 1 day <= diff < 2 days
+        elif time_diff < timedelta(days=2):
             return TimeFrame.YESTERDAY
-        elif time_diff < timedelta(days=7): # 2 days <= diff < 1 week
+        elif time_diff < timedelta(days=7):
             return TimeFrame.THIS_WEEK
-        elif time_diff < timedelta(days=30): # 1 week <= diff < 1 month
+        elif time_diff < timedelta(days=30):
             return TimeFrame.THIS_MONTH
-        else: # diff >= 30 days
+        else:
             return TimeFrame.OLDER
     
     def _get_time_context(self, dt: datetime) -> Optional[str]:
@@ -114,16 +143,16 @@ class TemporalParser:
         Convert datetime to natural language temporal expression
         
         Args:
-            dt: DateTime object or ISO format string
+            dt: DateTime object or timestamp string in format "HH:MM [DD/MM/YY]"
             
         Returns:
             TemporalExpression with base expression and optional time context
         """
         if isinstance(dt, str):
-            try:
-                dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
-            except ValueError:
+            parsed_dt = self._parse_timestamp(dt)
+            if not parsed_dt:
                 return TemporalExpression("at an unknown time")
+            dt = parsed_dt
         
         timeframe = self._get_timeframe(dt)
         time_diff = self.reference_time - dt
@@ -147,16 +176,13 @@ class TemporalParser:
         elif timeframe == TimeFrame.THIS_MONTH:
             weeks = time_diff.days // 7
             expression = pattern.format(weeks) if "{}" in pattern else pattern
-        else:
+        else:  # OLDER timeframe
             if time_diff.days >= 365:
-                years = time_diff.days / 365
-                # Round to nearest integer to avoid incorrect year display
-                rounded_years = round(years)
-                expression = pattern.format(rounded_years) if "{}" in pattern else pattern
-            elif time_diff.days > 30:
-                expression = pattern.format(time_diff.days // 30) if "{}" in pattern else pattern
+                years = time_diff.days // 365
+                expression = f"{years} years ago"
             else:
-                expression = pattern
+                months = max(1, time_diff.days // 30)
+                expression = f"{months} months ago"
         
         # Add time context for recent timeframes
         time_context = self._get_time_context(dt)

@@ -15,6 +15,9 @@ def sanitize_mentions(content: str, mentions: list) -> str:
     formatted_lines = []
     in_code_block = False
     
+    # Common punctuation and tokens that might follow a mention
+    punctuation_marks = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '"', "'"]
+    
     for line in lines:
         if '```' in line:
             in_code_block = not in_code_block
@@ -24,10 +27,21 @@ def sanitize_mentions(content: str, mentions: list) -> str:
             f'<@{m.id}>': f'@{strip_role_prefixes(m.name)}' if not in_code_block else strip_role_prefixes(m.name)
             for m in mentions if hasattr(m, 'name')
         }
-        mention_map.update({
-            f'<@{m.id}>.': f'@{strip_role_prefixes(m.name)}.' if not in_code_block else f'{strip_role_prefixes(m.name)}.'
-            for m in mentions if hasattr(m, 'name')
-        })
+        
+        # Add punctuation-aware patterns
+        for m in mentions:
+            if hasattr(m, 'name'):
+                for punct in punctuation_marks:
+                    mention_map[f'<@{m.id}>{punct}'] = (
+                        f'@{strip_role_prefixes(m.name)}{punct}' if not in_code_block 
+                        else f'{strip_role_prefixes(m.name)}{punct}'
+                    )
+                    mention_map[f'<@!{m.id}>{punct}'] = (
+                        f'@{strip_role_prefixes(m.name)}{punct}' if not in_code_block 
+                        else f'{strip_role_prefixes(m.name)}{punct}'
+                    )
+        
+        # Add standard mention patterns
         mention_map.update({
             f'<@!{m.id}>': f'@{strip_role_prefixes(m.name)}' if not in_code_block else strip_role_prefixes(m.name)
             for m in mentions if hasattr(m, 'name')
@@ -36,18 +50,26 @@ def sanitize_mentions(content: str, mentions: list) -> str:
             f'<@&{m.id}>': f'@{strip_role_prefixes(m.name)}' if not in_code_block else strip_role_prefixes(m.name)
             for m in mentions if hasattr(m, 'name') and hasattr(m, 'guild_permissions')
         })
-        mention_map.update({
-            f'<#{m.id}>': f'#{m.name}' if not in_code_block else m.name
-            for m in mentions if hasattr(m, 'name') and isinstance(m, discord.TextChannel)
-        })
+        
+        # Add channel mentions with punctuation
+        for m in mentions:
+            if hasattr(m, 'name') and isinstance(m, discord.TextChannel):
+                mention_map[f'<#{m.id}>'] = f'#{m.name}' if not in_code_block else m.name
+                for punct in punctuation_marks:
+                    mention_map[f'<#{m.id}>{punct}'] = (
+                        f'#{m.name}{punct}' if not in_code_block 
+                        else f'{m.name}{punct}'
+                    )
             
         # Log transformations
         for pattern, replacement in mention_map.items():
             logging.debug(f"Sanitize transform: {pattern} -> {replacement}")
             
         current_line = line
-        for pattern, replacement in mention_map.items():
-            current_line = current_line.replace(pattern, replacement)
+        # Sort patterns by length (longest first) to avoid partial replacements
+        patterns = sorted(mention_map.keys(), key=len, reverse=True)
+        for pattern in patterns:
+            current_line = current_line.replace(pattern, mention_map[pattern])
             
         formatted_lines.append(current_line)
     

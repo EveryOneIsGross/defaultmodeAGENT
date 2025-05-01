@@ -1,4 +1,8 @@
-- temporality is something saying 2 years ago when that is impossible
+FEAT. IDEAS
+
+- voice messaging. a module for handling voice to text, text to agent, agent to tts. simulating voice messages in dm between people.
+
+CURRENT BUGS
 
 - process image sendlong message typing indicator is triggering twice and not encapsulating the process correctly.
 
@@ -51,3 +55,5 @@ COMPLETED
     Status: [PRESERVED GAME]
     Mood: [APPRECIATIVE]
     ```
+
+- temporality is something saying 2 years ago when that is impossible
