@@ -49,7 +49,7 @@ def initialize_api_client(args):
         api.model_name = args.model or os.getenv('OLLAMA_MODEL_NAME', 'llama3.2-vision')
     elif api.api_type == 'openai':
         api.api_key = os.getenv('OPENAI_API_KEY')
-        api.model_name = args.model or os.getenv('OPENAI_MODEL_NAME', 'chatgpt-4o-latest')
+        api.model_name = args.model or os.getenv('OPENAI_MODEL_NAME', 'gpt-4.1')
         openai.api_key = api.api_key
     elif api.api_type == 'anthropic':
         api.api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -59,7 +59,7 @@ def initialize_api_client(args):
         api.model_name = args.model or os.getenv('VLLM_MODEL_NAME', 'hermes-testing/Hermes-3-Pro-RC2-e4')
     elif api.api_type == 'gemini':
         api.api_key = os.getenv('GEMINI_API_KEY')
-        api.model_name = args.model or os.getenv('GEMINI_MODEL_NAME', 'gemini-2.0-flash-thinking-exp-01-21')
+        api.model_name = args.model or os.getenv('GEMINI_MODEL_NAME', 'gemini-2.5-pro-exp-03-25')
         api.gemini_client = genai.Client(api_key=api.api_key)
     else:
         raise ValueError(f"Unsupported API type: {api.api_type}")

@@ -7,6 +7,7 @@ from typing import List, Tuple, Optional, Dict, Any
 import string
 import re
 import math
+import asyncio
 
 from bot_config import config
 from tokenizer import get_tokenizer, count_tokens
@@ -518,6 +519,7 @@ class UserMemoryIndex:
         union = len(ngrams1.union(ngrams2))
         
         return intersection / union if union > 0 else 0
+
     def count_tokens(self, text):
         """Count the number of tokens in text using the global tokenizer."""
         return count_tokens(text)
@@ -655,3 +657,142 @@ class UserMemoryIndex:
             self.logger.info("Memory cache loaded successfully.")
             return True
         return False
+
+    async def search_async(self, query, k=5, user_id=None, similarity_threshold=0.85):
+        """Asynchronous version of search that runs in a thread pool to avoid blocking the event loop.
+        
+        Args:
+            query (str): Search query text
+            k (int): Maximum number of results to return
+            user_id (str, optional): If provided, only search this user's memories
+            similarity_threshold (float): Threshold for considering memories as duplicates
+            
+        Returns:
+            list: List of tuples containing (memory_text, relevance_score), where score is normalized to 0.00-1.00
+        """
+        # Use a thread pool executor to run the CPU-bound search operation
+        loop = asyncio.get_event_loop()
+        self.logger.info(f"Starting async search for query: {query[:100]}...")
+        
+        # Run the expensive search operation in a thread pool
+        results = await loop.run_in_executor(
+            None,  # Use default executor
+            lambda: self.search(query, k, user_id, similarity_threshold)
+        )
+        
+        self.logger.info(f"Async search completed with {len(results)} results")
+        return results
+
+class RepoIndex:
+    """A class for indexing and searching GitHub repository contents."""
+    
+    def __init__(self, cache_dir):
+        """Initialize the repository indexing and searching class.
+        
+        Args:
+            cache_dir (str): Path to the cache directory
+        """
+        # Create cache directory if it doesn't exist
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_dir = cache_dir
+        self.repo_index = defaultdict(set)
+        self.load_cache()
+        
+    def index_file(self, file_path, content, branch='main'):
+        """Index a file for search.
+        
+        Args:
+            file_path (str): Path to the file
+            content (str): Content of the file
+            branch (str): Git branch
+        """
+        # Use only words longer than 3 characters, split by non-alphanumeric chars
+        words = set(re.findall(r'\b\w{3,}\b', content.lower()))
+        self.repo_index[branch].add(file_path)
+        
+        with open(os.path.join(self.cache_dir, f'{branch}_{file_path.replace("/", "_")}.txt'), 'w', encoding='utf-8') as f:
+            f.write(content)
+            
+    def search_repo(self, query, branch='main', limit=5):
+        """Search for relevant files matching a query.
+        
+        Args:
+            query (str): Search query
+            branch (str): Git branch to search
+            limit (int): Maximum number of results to return
+            
+        Returns:
+            list: List of tuples containing (file_path, relevance_score)
+        """
+        # Simple search implementation based on term frequency
+        query_words = set(re.findall(r'\b\w{3,}\b', query.lower()))
+        if not query_words:
+            return []
+            
+        results = []
+        for file_path in self.repo_index.get(branch, set()):
+            try:
+                with open(os.path.join(self.cache_dir, f'{branch}_{file_path.replace("/", "_")}.txt'), 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    
+                # Count query words in content
+                file_words = set(re.findall(r'\b\w{3,}\b', content.lower()))
+                match_count = sum(1 for word in query_words if word in file_words)
+                
+                if match_count > 0:
+                    # Calculate simple relevance score
+                    score = match_count / len(query_words)
+                    results.append((file_path, score))
+            except Exception as e:
+                # Skip files that can't be read
+                continue
+                
+        # Sort by relevance score
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:limit]
+
+    async def search_repo_async(self, query, branch='main', limit=5):
+        """Asynchronous version of search_repo that runs in a thread pool.
+        
+        Args:
+            query (str): Search query
+            branch (str): Git branch to search
+            limit (int): Maximum number of results to return
+            
+        Returns:
+            list: List of tuples containing (file_path, relevance_score)
+        """
+        # Run the CPU-bound search in a thread pool
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None,  # Use default executor
+            lambda: self.search_repo(query, branch, limit)
+        )
+        return results
+        
+    def clear_cache(self):
+        """Clear the index cache."""
+        self.repo_index = defaultdict(set)
+        for f in os.listdir(self.cache_dir):
+            if f.endswith('.txt'):
+                os.remove(os.path.join(self.cache_dir, f))
+                
+    def save_cache(self):
+        """Save the current index to a cache file."""
+        with open(os.path.join(self.cache_dir, 'repo_index.json'), 'w') as f:
+            # Convert sets to lists for JSON serialization
+            serializable_index = {k: list(v) for k, v in self.repo_index.items()}
+            json.dump(serializable_index, f)
+            
+    def load_cache(self):
+        """Load the index from a cache file if it exists."""
+        cache_file = os.path.join(self.cache_dir, 'repo_index.json')
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                try:
+                    loaded_index = json.load(f)
+                    # Convert lists back to sets
+                    self.repo_index = defaultdict(set, {k: set(v) for k, v in loaded_index.items()})
+                except:
+                    # If there's an error loading the cache, start fresh
+                    self.repo_index = defaultdict(set)

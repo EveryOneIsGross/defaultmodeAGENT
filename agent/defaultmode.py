@@ -50,7 +50,7 @@ class DMNProcessor:
         # Fuzzy matching settings
         # These need adding to the configs presets
         self.fuzzy_overlap_threshold = 80 # Minimum fuzzy overlap threshold for memory combination
-        self.fuzzy_search_threshold = 50  # Minimum fuzzy search threshold for term matching
+        self.fuzzy_search_threshold = 90  # Minimum fuzzy search threshold for term matching
         
         # Memory context compression settings
         self.max_memory_length = 64  # Maximum length of a memory based on the truncate_middle function
@@ -61,9 +61,9 @@ class DMNProcessor:
         # These need adding to the individual bot initialisation
         self.modes = {
             "forgetful": {
-                "combination_threshold": 0.01,  # Lower threshold = more memories combined
+                "combination_threshold": 0.02,  # Lower threshold = more memories combined
                 "decay_rate": 0.8,            # High decay = aggressive forgetting
-                "top_k": 24                  # More memories considered
+                "top_k": 12                  # More memories considered
             },
             "homeostatic": {
                 "combination_threshold": 0.2,  # Balanced threshold

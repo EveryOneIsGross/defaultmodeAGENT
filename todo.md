@@ -2,18 +2,13 @@ FEAT. IDEAS
 
 - voice messaging. a module for handling voice to text, text to agent, agent to tts. simulating voice messages in dm between people.
 
+- expand webscraper
+
 CURRENT BUGS
 
 - process image sendlong message typing indicator is triggering twice and not encapsulating the process correctly.
 
 - long message splitting is not appending broken markdown wraps causing @mention transforms to occasionally break.
-
-- DMs aren't handling the removal of '@' in direct chats. possible not calling the sanitize_mentions method
-
-- DMs need renaming in the Model Context Prompt (lol).. j/k #MCPrip... no srsly tho. I need to rename the DM from discords abstraction to "Private Message" and test it to see if the agents silo memories by choice better between recalled plain text context without index enforcement. 🤔
-
-- enable toggling `hippocampus` ranking off or on
-    + tune the hippocampus and amgdelya hyperparameter interactions for homeostatic equilibrium management of the in memory memory space for the agent
 
 - logging events need aligning and correcting where possible
 
@@ -33,8 +28,6 @@ CURRENT BUGS
     + a way of extracting and preformatting social media/email/archive
     + then ingesting them into the inverted index for the agent to grok
 
-- image handling automatically resize large images under a threshold value
-
 - the `user_name` is unsafe and being transformed by an async operation causing mentioned users to hijack the index and response causing a Freaky Friday event.
 
 - `defaultmode.py` needs a context window limit... I'd prefer not to chunk or truncate if possible. only an issue on sub 32k context window limit llms.
@@ -45,7 +38,13 @@ CURRENT BUGS
 
 COMPLETED
 
+0325
+
 ~~- image caching isn't using the temporty agent designated cache folders...~~ - done
+
+- image handling automatically resize large images under a threshold value
+
+0324
 
 - #channelnames are handled with #102989861208 numerical IDS and also need special handling simialr to mention transforms between channels and agent *sigh*
     example mentoning one by name to the agent and it reproduces id instyead of name back to channel exposing probably the id instead of the name back afwd to the agent, needs mention sanitazation logic 
@@ -57,3 +56,11 @@ COMPLETED
     ```
 
 - temporality is something saying 2 years ago when that is impossible
+
+040524
+
+- enable toggling `hippocampus` ranking off or on
+    + tune the hippocampus and amgdelya hyperparameter interactions for homeostatic equilibrium management of the in memory memory space for the agent
+
+
+- DMs aren't handling the removal of '@' in direct chats. possible not calling the sanitize_mentions method

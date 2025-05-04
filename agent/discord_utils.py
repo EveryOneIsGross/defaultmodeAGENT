@@ -84,23 +84,107 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
         
     # In DMs (guild is None), use display_name when possible
     if not guild:
-        def format_dm_mentions(match):
-            username = match.group(1)
-            # Keep @ for code annotations like @property, @staticmethod, etc.
-            code_annotations = ['property', 'staticmethod', 'classmethod', 'decorator', 
-                              'param', 'return', 'override', 'abstractmethod']
-            if username.lower() in code_annotations:
-                return f"@{username}"
+        logging.info(f"DM message detected - guild is None. Content preview: {content[:100]}...")
+        
+        # First log how many @ symbols we have in the content
+        at_symbols = content.count('@')
+        channel_symbols = content.count('#')
+        logging.info(f"Found {at_symbols} '@' symbols and {channel_symbols} '#' symbols in DM message")
+        
+        # Check for code annotations and preserve them
+        code_annotations = ['property', 'staticmethod', 'classmethod', 'decorator', 
+                          'param', 'return', 'override', 'abstractmethod']
+        
+        # If bot is provided, we can directly search all guild members
+        if bot:
+            # Collect all guild members for direct replacement
+            all_members = {}
+            all_channels = {}
+            
+            for bot_guild in bot.guilds:
+                # Collect members
+                for member in bot_guild.members:
+                    # Use member.name as key, mapped to display_name
+                    all_members[member.name] = member.display_name
+                    # Also add lowercase version for case-insensitive matching
+                    all_members[member.name.lower()] = member.display_name
+                    # Add display_name as well if different
+                    if member.name != member.display_name:
+                        all_members[member.display_name] = member.display_name
                 
-            # Try to find the user in mutual guilds to get display_name if bot is provided
-            if bot:
-                for guild in bot.guilds:
-                    member = discord.utils.get(guild.members, name=username)
-                    if member:
-                        return member.display_name
-            # Fall back to username if not found or bot not provided
-            return username
-        return re.sub(r'@([\w.]+)', format_dm_mentions, content)
+                # Collect channels
+                for channel in bot_guild.channels:
+                    if hasattr(channel, 'name'):
+                        all_channels[channel.name] = channel
+                        all_channels[channel.name.lower()] = channel
+            
+            # Sort member names by length (longer first) to avoid partial replacements
+            sorted_names = sorted(all_members.keys(), key=len, reverse=True)
+            sorted_channels = sorted(all_channels.keys(), key=len, reverse=True)
+            
+            # Split content into lines and check each line
+            lines = content.split('\n')
+            formatted_lines = []
+            
+            for line in lines:
+                # Skip code blocks (marked by ```)
+                if '```' in line:
+                    formatted_lines.append(line)
+                    continue
+                
+                # Check for code annotations first
+                for annotation in code_annotations:
+                    if f"@{annotation}" in line:
+                        # Preserve the code annotation
+                        line = line.replace(f"@{annotation}", f"__CODE_ANNOTATION_{annotation}__")
+                
+                # Replace each name with display_name
+                for name in sorted_names:
+                    if f"@{name}" in line:
+                        replacement = all_members[name]
+                        if mentions_enabled:
+                            line = line.replace(f"@{name}", f"@{replacement}")
+                        else:
+                            line = line.replace(f"@{name}", replacement)
+                
+                # Replace each channel with channel mention or name
+                for name in sorted_channels:
+                    if f"#{name}" in line:
+                        channel = all_channels[name]
+                        if mentions_enabled:
+                            line = line.replace(f"#{name}", f"<#{channel.id}>")
+                        else:
+                            line = line.replace(f"#{name}", f"#{channel.name}")
+                
+                # Restore code annotations
+                for annotation in code_annotations:
+                    if f"__CODE_ANNOTATION_{annotation}__" in line:
+                        line = line.replace(f"__CODE_ANNOTATION_{annotation}__", f"@{annotation}")
+                
+                formatted_lines.append(line)
+            
+            result = '\n'.join(formatted_lines)
+            logging.info(f"DM format result: {result[:100]}...")
+            return result
+        else:
+            # If no bot is provided, we can't do much except basic replacement
+            logging.warning("Bot instance not provided - can't look up users across guilds")
+            
+            # Simple code annotation preservation
+            for annotation in code_annotations:
+                content = content.replace(f"@{annotation}", f"__CODE_ANNOTATION_{annotation}__")
+            
+            # Keep @ symbols if mentions_enabled, otherwise strip them
+            if not mentions_enabled:
+                # Remove @ symbols that aren't part of code annotations
+                content = re.sub(r'@([\w\.\-_]+)', r'\1', content)
+            
+            # Restore code annotations
+            for annotation in code_annotations:
+                content = content.replace(f"__CODE_ANNOTATION_{annotation}__", f"@{annotation}")
+            
+            logging.info(f"DM format result (basic): {content[:100]}...")
+            return content
         
     lines = content.split('\n')
     formatted_lines = []
@@ -136,8 +220,8 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                     # For user mentions, use display_name without @
                     member = discord.utils.get(guild.members, name=username)
                     if member:
-                        return member.display_name
-                    return username
+                        return member.display_name  # No @ symbol when mentions disabled
+                    return username  # No @ symbol when mentions disabled
                 
                 current_line = re.sub(r'@([\w.]+)', format_mentions_disabled, current_line)
                 

@@ -38,6 +38,7 @@ class DiscordConfig(BaseModel):
         'resume',
         'get_logs',
         'dmn',
+        'mentions',
         'persona'
     })
     
@@ -45,8 +46,8 @@ class DiscordConfig(BaseModel):
         'add_memory',
         'clear_memories',
         'search_memories',
-        'mentions',
-        'index_repo'
+        'index_repo',
+        'reranking'
     })
     
     general_commands: Set[str] = Field(default={
@@ -135,7 +136,7 @@ class SearchConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
-    max_history: int = Field(default=8)
+    max_history: int = Field(default=16)
     truncation_length: int = Field(default=256)
     harsh_truncation_length: int = Field(default=64)
 
@@ -143,8 +144,11 @@ class PersonaConfig(BaseModel):
     """Persona and response configuration"""
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
-    hippocampus_bandwidth: float = Field(default=0.6)
+    hippocampus_bandwidth: float = Field(default=0.4)
     memory_capacity: int = Field(default=16)
+    use_hippocampus_reranking: bool = Field(default=True)
+    reranking_blend_factor: float = Field(default=0.7, description="Weight for blending initial search scores with reranking similarity (0-1)")
+    minimum_reranking_threshold: float = Field(default=0.1, description="Minimum threshold for reranked memories")
 
 class NotionConfig(BaseModel):
     """Notion database configuration"""

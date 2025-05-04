@@ -13,7 +13,7 @@ class EmbeddingConfig(BaseModel):
         description="Provider for embedding service"
     )
     model: str = Field(
-        default='nomic-embed-text',  # Ollama's default embedding model
+        default='all-minilm:latest',  # Ollama's default embedding model
         description="Specific model for embeddings"
     )
     api_base: str = Field(
@@ -21,7 +21,7 @@ class EmbeddingConfig(BaseModel):
         description="Base URL for Ollama API"
     )
     dimensions: int = Field(
-        default=768,  # nomic-embed-text default
+        default=384,  
         description="Expected embedding dimensions"
     )
 
@@ -29,6 +29,7 @@ class HippocampusConfig(BaseModel):
     """Pydantic model for Hippocampus configuration - provides vector embeddings for downstream search."""
     embedding_provider: str = Field(default='ollama', description="Provider for embedding service")
     embedding_model: str = Field(default='all-minilm:latest', description="Model to use for embeddings")
+    blend_factor: float = Field(default=0.7, description="Weight for blending initial search scores with embedding similarity (0-1)")
 
 class Hippocampus:
     def __init__(self, config: HippocampusConfig, logger=None):
@@ -181,12 +182,29 @@ class Hippocampus:
                 
         return embeddings
 
-    async def rerank_memories(self, query: str, memories: List[Tuple[str, float]], threshold: float = 0.6) -> List[Tuple[str, float]]:
-        """Rerank memories using batched vector similarity."""
+    async def rerank_memories(self, query: str, memories: List[Tuple[str, float]], threshold: float = 0.6, blend_factor: Optional[float] = None) -> List[Tuple[str, float]]:
+        """
+        Rerank memories using batched vector similarity and blend with original scores.
+        
+        Args:
+            query: The search query
+            memories: List of (memory_text, initial_score) tuples
+            threshold: Minimum score threshold for filtering results
+            blend_factor: Weight for blending (0-1), where 0 means only use embedding similarity
+                          and 1 means only use initial scores. If None, uses config's blend_factor.
+                          
+        Returns:
+            List of (memory_text, combined_score) tuples sorted by combined score
+        """
         self.logger.info(f"Starting batch reranking for query: {query[:100]}... with {len(memories)} candidates")
         
-        # Extract memory texts
+        # Use provided blend factor or default from config
+        blend = self.config.blend_factor if blend_factor is None else blend_factor
+        self.logger.info(f"Using blend factor: {blend:.2f} (initial:{blend:.2f}/embedding:{1-blend:.2f})")
+        
+        # Extract memory texts and initial scores
         memory_texts = [memory[0] for memory in memories]
+        initial_scores = np.array([memory[1] for memory in memories])
         
         # Get embeddings for query and all memories in batch
         query_embedding = await self._get_embedding(query)
@@ -197,16 +215,32 @@ class Hippocampus:
         memory_embeddings = await self._get_embeddings_batch(memory_texts)
         
         # Calculate similarities in one operation
-        similarities = np.dot(memory_embeddings, query_embedding)
+        embedding_similarities = np.dot(memory_embeddings, query_embedding)
+        
+        # Log the raw embedding similarities for debugging
+        for memory_text, similarity in zip(memory_texts, embedding_similarities):
+            self.logger.debug(f"Embedding similarity: {similarity:.4f} for {memory_text[:50]}...")
+        
+        # Combine scores: blend * initial_score + (1-blend) * embedding_similarity  
+        combined_scores = (blend * initial_scores) + ((1 - blend) * embedding_similarities)
+        
+        # Log the blended scores for debugging
+        for memory_text, initial, embedding_sim, combined in zip(
+            memory_texts, initial_scores, embedding_similarities, combined_scores
+        ):
+            self.logger.debug(
+                f"Memory score: initial={initial:.4f}, embedding={embedding_sim:.4f}, " +
+                f"combined={combined:.4f} for {memory_text[:50]}..."
+            )
         
         # Create reranked list with threshold filtering
         reranked = [
-            (memory_text, float(similarity))
-            for memory_text, similarity in zip(memory_texts, similarities)
-            if similarity >= threshold
+            (memory_text, float(score))
+            for memory_text, score in zip(memory_texts, combined_scores)
+            if score >= threshold
         ]
         
-        # Sort by similarity scores
+        # Sort by combined scores
         reranked.sort(key=lambda x: x[1], reverse=True)
         
         self.logger.info(f"Batch reranking complete - {len(reranked)}/{len(memories)} memories above threshold")

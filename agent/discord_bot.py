@@ -173,7 +173,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         return
 
     user_id = str(message.author.id)
-    user_name = message.author.name
+    user_name = strip_role_prefixes(message.author.name)
     
     # Extract URLs early in the flow
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
@@ -197,16 +197,16 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             try:
                 original = await message.channel.fetch_message(message.reference.message_id)
                 original_content = original.content.strip()
+                original_author = strip_role_prefixes(original.author.name)
                 if original_content:
-                    # REPLY MENTIONS HANDLING TO ENSURE LLM ONLY SEES USER NAME MENTIONS NOT ID OR DISPLAY NAME
-                    # For reply context, we want consistent name references in the content
+                    # Use utilities for consistent mention handling
                     for mention in original.mentions:
-                        original_content = original_content.replace(f'<@{mention.id}>', f'@{mention.name}')
-                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{mention.name}')
+                        original_content = original_content.replace(f'<@{mention.id}>', f'@{strip_role_prefixes(mention.name)}')
+                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{strip_role_prefixes(mention.name)}')
                     for channel in original.channel_mentions:
                         original_content = original_content.replace(f'<#{channel.id}>', f'#{channel.name}')
-                    reply_context = original_content
-                    content = f"[Replying to: {original_content}] {content}"
+                    reply_context = f"@{original_author}: {original_content}"
+                    content = f"[Replying to @{original_author}: {original_content}] {content}"
             except (discord.NotFound, discord.Forbidden):
                 pass
     
@@ -222,25 +222,59 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         try:
             is_dm = isinstance(message.channel, discord.DMChannel)
             
-            # Get initial candidate memories
-            candidate_memories = memory_index.search(
-                sanitized_content, 
+            # Get conversation context first
+            conversation_context = ""
+            async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
+                if msg.id != message.id:  # Skip the current message
+                    clean_name = strip_role_prefixes(msg.author.name)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    msg_content = sanitize_mentions(msg.content, combined_mentions)
+                    conversation_context += f"@{clean_name}: {msg_content}\n"
+
+            # Combine current message with context for semantic search
+            search_query = f"{sanitized_content}\n\nConversation context:\n{conversation_context}"
+            
+            # Get initial candidate memories using the async method
+            candidate_memories = await memory_index.search_async(
+                search_query, 
                 k=MEMORY_CAPACITY,  
                 user_id=(user_id if is_dm else None)
             )
             
-            # Initialize Hippocampus for reranking if we have candidates
+            # Process memories based on reranking setting
             if candidate_memories:
-                hippocampus_config = HippocampusConfig()
-                hippocampus = Hippocampus(hippocampus_config)
-                # Rerank memories with a threshold analogous to the memory bandwidth
-                relevant_memories = await hippocampus.rerank_memories(
-                    query=sanitized_content,
-                    memories=candidate_memories,
-                    threshold=HIPPOCAMPUS_BANDWIDTH - bot.amygdala_response  # Adjust the bandwidth as needed
-                )
+                bot.logger.info(f"Candidate memories: {candidate_memories}")
+                
+                if config.persona.use_hippocampus_reranking:
+                    # Initialize Hippocampus for reranking
+                    hippocampus_config = HippocampusConfig(blend_factor=config.persona.reranking_blend_factor)
+                    hippocampus = Hippocampus(hippocampus_config)
+                    
+                    # Calculate and log threshold - high amygdala = lower threshold (more permissive)
+                    amygdala_scale = bot.amygdala_response / 100.0  # 0-1 scale
+                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH + (0.3 * (1 - amygdala_scale)))  # Inverted influence
+                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {0.3 * (1 - amygdala_scale):.3f})")
+                    
+                    # Rerank memories with blended weights
+                    relevant_memories = await hippocampus.rerank_memories(
+                        query=search_query,  # Use the enriched query for reranking too
+                        memories=candidate_memories,
+                        threshold=threshold,
+                        blend_factor=config.persona.reranking_blend_factor
+                    )
+                    bot.logger.info(f"Reranked memories: {relevant_memories}")
+                    
+                    # Log the memories that passed the threshold
+                    bot.logger.info(f"Found {len(relevant_memories)} memories above threshold {threshold:.3f}:")
+                    for memory, score in relevant_memories:
+                        bot.logger.info(f"Memory score {score:.3f}: {memory[:100]}...")
+                else:
+                    # Skip reranking, use candidate memories directly
+                    relevant_memories = candidate_memories
+                    bot.logger.info(f"Using memories without reranking (reranking disabled): {len(relevant_memories)} memories")
             else:
                 relevant_memories = []
+                bot.logger.info("No candidate memories found for reranking")
             
             # Build memory context
             context = f"Current channel: #{message.channel.name if hasattr(message.channel, 'name') else 'Direct Message'}\n"
@@ -323,6 +357,11 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             typing_task.cancel()
             
         if response_content:
+            # Add logging to help debug DM issues
+            is_dm = isinstance(message.channel, discord.DMChannel)
+            bot.logger.info(f"Formatting response for channel type: {'DM' if is_dm else 'Guild'}")
+            bot.logger.info(f"Channel has guild: {message.guild is not None}, Guild name: {message.guild.name if message.guild else 'None'}")
+            
             formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
             await send_long_message(message.channel, formatted_content, bot=bot)
             bot.logger.info(f"Sent response to {user_name} (ID: {user_id}): {response_content[:1000]}...")
@@ -334,7 +373,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             memory_text = (
                 f"User @{user_name} in #{channel_name} ({timestamp}): "
                 f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
-                f"@{bot.user.name}: {response_content}"
+                f"@{strip_role_prefixes(bot.user.name)}: {response_content}"
             )
             memory_index.add_memory(user_id, memory_text)
             
@@ -757,6 +796,12 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
         
     # First format all mentions in the entire text
     guild = getattr(channel, 'guild', None)
+    is_dm = isinstance(channel, discord.DMChannel)
+    
+    if bot and bot.logger:
+        bot.logger.info(f"send_long_message: Channel type: {'DM' if is_dm else 'Guild'}")
+        bot.logger.info(f"send_long_message: Guild access: {guild is not None}")
+    
     formatted_text = format_discord_mentions(text, guild, 
                                           True if bot is None else bot.mentions_enabled, 
                                           bot)
@@ -1713,7 +1758,10 @@ def setup_bot(prompt_path=None, bot_id=None):
                 await ctx.send("Repository indexing is not complete. Please wait or run !index_repo first.")
                 return
 
-            relevant_files = repo_index.search_repo(question)
+            # Use typing indicator during search
+            async with ctx.typing():
+                relevant_files = await repo_index.search_repo_async(question)
+                
             if not relevant_files:
                 await ctx.send("No relevant files found in the repository for this question.")
                 return
@@ -1804,7 +1852,9 @@ def setup_bot(prompt_path=None, bot_id=None):
         is_dm = isinstance(ctx.channel, discord.DMChannel)
         user_id = str(ctx.author.id) if is_dm else None
         
-        results = user_memory_index.search(query, user_id=user_id)
+        # Show typing indicator during search
+        async with ctx.typing():
+            results = await user_memory_index.search_async(query, user_id=user_id)
         
         if not results:
             await ctx.send("No results found.")
@@ -1960,6 +2010,76 @@ def setup_bot(prompt_path=None, bot_id=None):
         except Exception as e:
             bot.logger.error(f"Error retrieving logs: {str(e)}")
             await ctx.send(f"An error occurred while retrieving the logs: {str(e)}")
+
+    @bot.command(name='reranking')
+    @commands.check(lambda ctx: config.discord.has_command_permission('reranking', ctx))
+    async def toggle_reranking(ctx, setting: str = None, value: str = None):
+        """
+        Control hippocampus memory reranking settings.
+        
+        Usage:
+        !reranking status - Show current reranking settings
+        !reranking toggle <on|off> - Enable/disable memory reranking
+        !reranking blend <value> - Set blend factor (0-1) between initial and embedding scores
+        !reranking threshold <value> - Set minimum threshold for memory filtering
+        """
+        if setting is None or setting.lower() == 'status':
+            status_message = (
+                f"**Hippocampus Memory Reranking Settings**\n"
+                f"- Enabled: {config.persona.use_hippocampus_reranking}\n"
+                f"- Blend factor: {config.persona.reranking_blend_factor:.2f} (initial:{config.persona.reranking_blend_factor:.2f}/embedding:{1-config.persona.reranking_blend_factor:.2f})\n"
+                f"- Minimum threshold: {config.persona.minimum_reranking_threshold:.2f}\n"
+                f"- Bandwidth: {config.persona.hippocampus_bandwidth:.2f}"
+            )
+            await ctx.send(status_message)
+            return
+            
+        if setting.lower() == 'toggle':
+            if value is None:
+                await ctx.send("Please specify 'on' or 'off' to toggle reranking.")
+                return
+                
+            if value.lower() in ('on', 'true', 'enable'):
+                config.persona.use_hippocampus_reranking = True
+                await ctx.send("✅ Memory reranking enabled - memories will be reranked using blended scores.")
+            elif value.lower() in ('off', 'false', 'disable'):
+                config.persona.use_hippocampus_reranking = False
+                await ctx.send("❌ Memory reranking disabled - raw semantic search results will be used.")
+            else:
+                await ctx.send("❓ Invalid value. Use: on/off")
+                
+        elif setting.lower() == 'blend':
+            if value is None:
+                await ctx.send(f"Current blend factor is {config.persona.reranking_blend_factor:.2f}")
+                return
+                
+            try:
+                blend = float(value)
+                if 0 <= blend <= 1:
+                    config.persona.reranking_blend_factor = blend
+                    await ctx.send(f"✅ Blend factor set to {blend:.2f} (initial:{blend:.2f}/embedding:{1-blend:.2f})")
+                else:
+                    await ctx.send("❓ Blend factor must be between 0 and 1.")
+            except ValueError:
+                await ctx.send("❓ Invalid value. Please provide a number between 0 and 1.")
+                
+        elif setting.lower() == 'threshold':
+            if value is None:
+                await ctx.send(f"Current minimum threshold is {config.persona.minimum_reranking_threshold:.2f}")
+                return
+                
+            try:
+                threshold = float(value)
+                if 0 <= threshold <= 1:
+                    config.persona.minimum_reranking_threshold = threshold
+                    await ctx.send(f"✅ Minimum threshold set to {threshold:.2f}")
+                else:
+                    await ctx.send("❓ Threshold must be between 0 and 1.")
+            except ValueError:
+                await ctx.send("❓ Invalid value. Please provide a number between 0 and 1.")
+                
+        else:
+            await ctx.send("❓ Unknown setting. Available options: toggle, blend, threshold, status")
 
     return bot
 
