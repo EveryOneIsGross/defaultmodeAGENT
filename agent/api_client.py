@@ -146,17 +146,15 @@ def prepare_image_content(prompt: str, image_paths: list, api_type: str) -> list
         return content
 
     elif api_type == 'ollama':
-        if len(base64_images) > 1:
-            logging.warning("Ollama only supports one image per request. Using first image.")
-        return [
-            {"type": "text", "text": prompt},
-            {
+        content = [{"type": "text", "text": prompt}]
+        for img_data in base64_images:
+            content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/jpeg;base64,{base64_images[0]}"
+                    "url": f"data:image/jpeg;base64,{img_data}"
                 }
-            }
-        ]
+            })
+        return content
         
     else:
         # This case should ideally not be reached if checks are done earlier,

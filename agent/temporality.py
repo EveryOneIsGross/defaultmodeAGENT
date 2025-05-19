@@ -86,16 +86,12 @@ class TemporalParser:
                 return timestamp
                 
             if isinstance(timestamp, str):
-                # Remove any parentheses that might be present
                 timestamp = timestamp.strip('()')
-                
-                # Try direct format first (from currentmoment())
                 try:
                     return datetime.strptime(timestamp, "%H:%M [%d/%m/%y]")
                 except ValueError:
                     pass
                     
-                # Try with flexible whitespace (from memory text)
                 match = re.match(r'(\d{2}):(\d{2})\s*\[(\d{2}/\d{2}/\d{2})\]', timestamp)
                 if match:
                     hour, minute, date = match.groups()

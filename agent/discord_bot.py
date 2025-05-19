@@ -19,7 +19,7 @@ import threading
 import re
 
 # Discord Format Handling
-from discord_utils import strip_role_prefixes, sanitize_mentions, format_discord_mentions
+from discord_utils import sanitize_mentions, format_discord_mentions
 
 # Configuration imports
 from bot_config import (
@@ -53,7 +53,6 @@ import traceback
 from tools.discordSUMMARISER import ChannelSummarizer
 from tools.discordGITHUB import GitHubRepo, RepoIndex, process_repo_contents, repo_processing_event
 from tools.webSCRAPE import scrape_webpage
-
 
 # import memory module
 from memory import UserMemoryIndex, CacheManager
@@ -97,7 +96,6 @@ def log_to_jsonl(data, bot_id=None):
     log_to_jsonl._logger.log(data)
 
 # Amygdala arousal handling
-
 def update_temperature(intensity: int) -> None:
     """Updates both bot and API client temperature based on amygdala arousal.
     
@@ -119,7 +117,6 @@ def currentmoment():
     return datetime.now().strftime("%H:%M [%d/%m/%y]")
 
 # background processing module
-
 def start_background_processing_thread(repo, memory_index, max_depth=None, branch='main', channel=None):
     """
     Start a background thread to process and index repository contents.
@@ -173,12 +170,11 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         return
 
     user_id = str(message.author.id)
-    user_name = strip_role_prefixes(message.author.name)
-    
+    user_name = message.author.name
     # Extract URLs early in the flow
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
     
-    # Use memory_index for first interaction detection - removes cache dependency
+    # Use memory_index for first interaction detection
     is_first_interaction = not bool(memory_index.user_memories.get(user_id, []))
 
     # Process content and handle mentions
@@ -197,16 +193,16 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             try:
                 original = await message.channel.fetch_message(message.reference.message_id)
                 original_content = original.content.strip()
-                original_author = strip_role_prefixes(original.author.name)
+                original_author = original.author.name
                 if original_content:
                     # Use utilities for consistent mention handling
                     for mention in original.mentions:
-                        original_content = original_content.replace(f'<@{mention.id}>', f'@{strip_role_prefixes(mention.name)}')
-                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{strip_role_prefixes(mention.name)}')
+                        original_content = original_content.replace(f'<@{mention.id}>', f'@{mention.name}')
+                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{mention.name}')
                     for channel in original.channel_mentions:
                         original_content = original_content.replace(f'<#{channel.id}>', f'#{channel.name}')
                     reply_context = f"@{original_author}: {original_content}"
-                    content = f"[Replying to @{original_author}: {original_content}] {content}"
+                    content = f"[Replying to @{original_author}: {original_content}]\n\n @{original_author}: {content}"
             except (discord.NotFound, discord.Forbidden):
                 pass
     
@@ -226,14 +222,18 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             conversation_context = ""
             async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != message.id:  # Skip the current message
-                    clean_name = strip_role_prefixes(msg.author.name)
+                    clean_name = msg.author.name
                     combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     conversation_context += f"@{clean_name}: {msg_content}\n"
 
-            # Combine current message with context for semantic search
-            search_query = f"{sanitized_content}\n\nConversation context:\n{conversation_context}"
+            # Build search query
+            # Combine current message with context for search, uses query AND context, it was causing too much generalisation
+            # search_query = f"{sanitized_content}\n\nConversation context:\n{conversation_context}"
             
+            # use only the current message for search, the broader context is making the search too broad
+            search_query = f"{sanitized_content}"
+
             # Get initial candidate memories using the async method
             candidate_memories = await memory_index.search_async(
                 search_query, 
@@ -257,7 +257,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     
                     # Rerank memories with blended weights
                     relevant_memories = await hippocampus.rerank_memories(
-                        query=search_query,  # Use the enriched query for reranking too
+                        query=search_query,  
                         memories=candidate_memories,
                         threshold=threshold,
                         blend_factor=config.persona.reranking_blend_factor
@@ -285,7 +285,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             messages = []
             async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != message.id:  # Skip the current message
-                    clean_name = strip_role_prefixes(msg.author.name)
+                    clean_name = msg.author.name
                     combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
@@ -297,7 +297,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                         for reaction in msg.reactions:
                             reaction_emoji = str(reaction.emoji)
                             async for user in reaction.users():
-                                reaction_user_name = strip_role_prefixes(user.name)
+                                reaction_user_name = user.name
                                 reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
@@ -373,7 +373,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             memory_text = (
                 f"User @{user_name} in #{channel_name} ({timestamp}): "
                 f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
-                f"@{strip_role_prefixes(bot.user.name)}: {response_content}"
+                f"{bot.user.name}: {response_content}"
             )
             memory_index.add_memory(user_id, memory_text)
             
@@ -381,7 +381,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 memory_index=memory_index,
                 user_id=user_id,
                 user_name=user_name,
-                memory_text=memory_text,  # Now includes both user input and bot response
+                memory_text=memory_text,
                 prompt_formats=prompt_formats,
                 system_prompts=system_prompts,
                 bot=bot
@@ -396,7 +396,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 'channel': message.channel.name if hasattr(message.channel, 'name') else 'DM',
                 'user_message': sanitized_content,
                 'reply_to': reply_context,
-                'ai_response': response_content,  # <-- The bot's response is here
+                'ai_response': response_content,
                 'system_prompt': system_prompt,
                 'prompt': prompt,
                 'temperature': bot.amygdala_response/100
@@ -465,11 +465,14 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
     bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
 
+    # When processing files, we don't use the inverted-index for memories, we use the conversation history instead
+    # This is due to the token volume of adding external context, adding other memories will bloat context window and potentially overwhelm the bot
+    # This isn't so much an issue of CLOUD/SOTA API models, but more of a local model issue, as the context window is limited, and image embedding layers get weird with restricted context windows
+
     try:
         amygdala_response = str(bot.amygdala_response if bot else DEFAULT_AMYGDALA_RESPONSE)
         bot.logger.info(f"Using amygdala arousal: {amygdala_response}")
-        
-        # Build context once before entering typing indicator
+
         context = f"Current channel: #{message.channel.name if hasattr(message.channel, 'name') else 'Direct Message'}\n\n"
         context += "Ongoing Chatroom Conversation:\n\n"
         context += "<conversation>\n"
@@ -488,7 +491,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 for reaction in msg.reactions:
                     reaction_emoji = str(reaction.emoji)
                     async for user in reaction.users():
-                        reaction_user_name = strip_role_prefixes(user.name)
+                        reaction_user_name = user.name
                         reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                 
                 if reaction_parts:
@@ -500,7 +503,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             context += f"{msg}\n"
         context += "</conversation>\n"
 
-        # Main processing block with typing indicator
+        # Main processing block
         typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         try:
             # Loop through attachments, handle size check and potential resizing here
@@ -566,25 +569,18 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     if is_potentially_image:
                         try:
                             image_data = await attachment.read()
-                            # Optional: Keep dimension-based resize for smaller files?
-                            # For simplicity now, we just use the data directly if < 1MB
-                            # (The resize logic we added earlier for <1MB files is removed 
-                            #  to avoid complexity, relying on the >1MB check above primarily)
                             data_to_save = image_data 
                             processed_as_image = True
 
-                            # Minimal verification (can be expanded if needed)
                             try:
                                 img = Image.open(io.BytesIO(data_to_save))
                                 img.verify() # Quick check
                                 bot.logger.info(f"Verified small image: {attachment.filename}")
                             except Exception as verify_err:
                                 bot.logger.warning(f"Small image {attachment.filename} failed verification: {verify_err}. Still attempting to use.")
-                                # Don't skip, API might handle slightly corrupt images
 
                         except Exception as img_error:
                             bot.logger.error(f"Error processing small image {attachment.filename}: {str(img_error)}")
-                            # Don't raise, just skip this attachment
                             continue 
                             
                     elif is_potentially_text:
@@ -650,10 +646,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                      await message.channel.send("No valid files found to analyze after processing.")
                 return # Exit if nothing was successfully processed
 
-            # Update flags based on actual processed content
-            # has_images = bool(image_files) # Already updated in the loop
-            # has_text = bool(text_contents)
-
             # Validate required prompts
             if has_images and has_text:
                 if 'analyze_combined' not in prompt_formats or 'combined_analysis' not in system_prompts:
@@ -702,7 +694,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
             bot.logger.info(f"Using prompt type: {'combined' if has_images and has_text else 'image' if has_images else 'text'}")
             
-            # Make the API call within the typing indicator
             response_content = await call_api(
                 prompt=prompt,
                 system_prompt=system_prompt,
@@ -721,7 +712,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             # Cancel typing maintenance when done or if error occurs
             typing_task.cancel()
 
-        # Move memory and thought generation outside typing indicator
         if response_content:
             # Save memory and generate thought
             files_description = []
@@ -731,7 +721,12 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 files_description.append(f"{len(text_contents)} text files: {', '.join(t['filename'] for t in text_contents)}")
                 
             timestamp = currentmoment()
-            memory_text = f"({timestamp}) Analyzed {' and '.join(files_description)} for User @{user_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}. Analysis: {response_content}"
+            channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
+            
+            # Create memory with file analysis context and include bot author details
+            memory_text = f"({timestamp}) Grokking {' and '.join(files_description)} for User @{user_name} in #{channel_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}\n{bot.user.name}: {response_content}"
+            
+            memory_index.add_memory(user_id, memory_text)
             
             # Create background task for thought generation
             asyncio.create_task(generate_and_save_thought(
@@ -960,7 +955,7 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
             
         max_retries = 3
         retry_count = 0
-        base_delay = 1.0
+        base_delay = 0.5
         
         while retry_count < max_retries:
             try:
@@ -1025,8 +1020,8 @@ async def generate_and_save_thought(memory_index, user_id, user_name, memory_tex
     )
     thought_response = clean_response(thought_response)
     
-    # Save both the original memory and the thought with actual timestamp
-    memory_string = f"Reflections on interactions with @{strip_role_prefixes(user_name)} ({storage_timestamp}):\n {thought_response}"
+    # Save both the original memory and the thought
+    memory_string = f"Reflections on interactions with @{user_name} ({storage_timestamp}):\n {thought_response}"
     bot.logger.debug(f"Pre-memory addition string: {memory_string}")
     memory_index.add_memory(user_id, memory_string)
     bot.logger.debug(f"Post-memory addition: {memory_index.user_memories[user_id][-1]}")
@@ -1039,43 +1034,6 @@ async def generate_and_save_thought(memory_index, user_id, user_name, memory_tex
         'memory_text': memory_text,
         'thought_response': thought_response
     }, bot_id=bot.user.name)
-
-def generate_action(system_prompts, prompt_formats, user_message, response, thought):
-    """This is a placeholder for future tool use to act after a response and thought is generated
-    Args:
-        system_prompts (dict): The system prompts for the bot
-        prompt_formats (dict): The prompt formats for the bot
-        user_message (str): The user's message to the bot
-        response (str): The response generated by the bot
-        thought (str): The thought generated by the bot
-    Returns:
-        The action to take as structured json/mcp/or action
-
-        Example:
-        {
-            "action": "mcp",
-            "mcp": {
-                "name": "mcp_name",
-                "parameters": {}
-            }
-        }
-        or
-        {
-            "action": "command",
-            "command": "!command_name"
-        }
-        or
-        {
-            "action": "json",
-            "json": {
-                "name": "json_name",
-                "parameters": {}
-            }
-        }
-
-    To be honest I am reluctant to enable tool calling / mcp at this time. But being able to call existing @commands would be great. Turn each other on or off lol, audit each others logs if they doubt.
-    """
-    pass
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename to prevent path traversal and injection."""
@@ -1163,6 +1121,8 @@ class CustomHelpCommand(commands.HelpCommand):
                             brief = brief[:72] + "..."
                         command_list.append(f"`!{cmd.name}` - {brief}")
                 
+                # this seems to be overkill and was probably Gemini being a edge-case over achiever
+                # come back and re evaluate the conditions that triggers this as it triggers unecessary 
                 if command_list:
                     # Split into multiple fields if needed
                     value = "\n".join(command_list)
@@ -1678,7 +1638,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                         combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
                         msg_content = sanitize_mentions(msg.content, combined_mentions)
                         truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
-                        clean_name = strip_role_prefixes(msg.author.name)
+                        clean_name = msg.author.name
                         formatted_msg = f" @{clean_name}: {truncated_content}"
                         
                         # Add reactions if present
@@ -1687,7 +1647,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                             for reaction in msg.reactions:
                                 reaction_emoji = str(reaction.emoji)
                                 async for user in reaction.users():
-                                    reaction_user_name = strip_role_prefixes(user.name)
+                                    reaction_user_name = user.name
                                     reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                             
                             if reaction_parts:
@@ -1784,7 +1744,8 @@ def setup_bot(prompt_path=None, bot_id=None):
                     combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
-                    clean_name = strip_role_prefixes(msg.author.name)
+                    #clean_name = strip_role_prefixes(msg.author.name)
+                    clean_name = msg.author.name
                     formatted_msg = f" @{clean_name}: {truncated_content}"
                     
                     # Add reactions if present
@@ -1793,7 +1754,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                         for reaction in msg.reactions:
                             reaction_emoji = str(reaction.emoji)
                             async for user in reaction.users():
-                                reaction_user_name = strip_role_prefixes(user.name)
+                                reaction_user_name = user.name
                                 reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                         
                         if reaction_parts:
@@ -2041,10 +2002,10 @@ def setup_bot(prompt_path=None, bot_id=None):
                 
             if value.lower() in ('on', 'true', 'enable'):
                 config.persona.use_hippocampus_reranking = True
-                await ctx.send("✅ Memory reranking enabled - memories will be reranked using blended scores.")
+                await ctx.send("✅ Memory reranking enabled - memories will be semantically reranked using blended scores.")
             elif value.lower() in ('off', 'false', 'disable'):
                 config.persona.use_hippocampus_reranking = False
-                await ctx.send("❌ Memory reranking disabled - raw semantic search results will be used.")
+                await ctx.send("❌ Memory reranking disabled - raw inverted-index search results will be used.")
             else:
                 await ctx.send("❓ Invalid value. Use: on/off")
                 
@@ -2131,10 +2092,15 @@ if __name__ == "__main__":
     MAX_RETRIES = 3
     retry_count = 0
     
+    # added a ctrl+c to stop the bot by wrapping the bot.run in a try except, for graceful shutdown
     while retry_count < MAX_RETRIES:
         try:
             bot = setup_bot(prompt_path=prompt_path, bot_id=args.bot_name)
-            bot.run(TOKEN, reconnect=True)
+            try:
+                bot.run(TOKEN, reconnect=True)
+            except KeyboardInterrupt:
+                logger.info("Received KeyboardInterrupt, shutting down gracefully...")
+                break
             break  # If bot.run() completes normally, exit the loop
             
         except discord.errors.LoginFailure as e:

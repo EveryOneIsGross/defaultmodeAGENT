@@ -618,6 +618,12 @@ async def root():
                         onchange="fetchMemories()">
                     <option value="">All Users</option>
                 </select>
+                <button onclick="deleteUser()" 
+                        class="button delete-button"
+                        id="delete_user_button"
+                        style="display: none;">
+                    Delete User
+                </button>
                 <div id="pagination_controls" style="display: flex; gap: 5px; align-items: center;">
                     <input type="number" 
                            id="per_page_input" 
@@ -1006,14 +1012,62 @@ async def root():
                     .then(response => response.json())
                     .then(data => {
                         const select = document.getElementById('user_id_select');
+                        const deleteButton = document.getElementById('delete_user_button');
                         if(data.user_ids && data.user_ids.length > 0) {
                             select.innerHTML = '<option value="">All Users</option>' +
                                 data.user_ids.map(uid => `<option value="${uid}">${uid}</option>`).join('');
+                            deleteButton.style.display = 'inline-block';
                         } else {
                             select.innerHTML = '<option value="">All Users</option>';
+                            deleteButton.style.display = 'none';
                         }
                     })
                     .catch(error => console.error('Error fetching user IDs:', error));
+                }
+
+                function deleteUser() {
+                    const userId = document.getElementById('user_id_select').value;
+                    if (!userId) {
+                        alert('Please select a user to delete');
+                        return;
+                    }
+                    
+                    if (!confirm(`Are you sure you want to delete user ${userId} and all their memories? This action cannot be undone.`)) {
+                        return;
+                    }
+                    
+                    fetch(`/user/${userId}`, {
+                        method: 'DELETE'
+                    })
+                    .then(async response => {
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            throw new Error(errorText);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        // Update stats display
+                        if (data.stats) {
+                            document.getElementById('stats').innerHTML = `
+                                <div class="success">
+                                    ${data.message}<br>
+                                    Memories: ${data.stats.memories}<br>
+                                    Users: ${data.stats.users}<br>
+                                    Index Terms: ${data.stats.index_terms}
+                                </div>`;
+                        }
+                        
+                        // Reset user selection and refresh the view
+                        document.getElementById('user_id_select').value = '';
+                        updateUserIds();
+                        fetchMemories();
+                        isModified = true;
+                    })
+                    .catch(error => {
+                        console.error('Delete user error:', error);
+                        alert('Error deleting user: ' + error.message);
+                    });
                 }
             </script>
         </div>
@@ -1108,6 +1162,126 @@ async def list_memories(
 async def get_user_ids():
     """Return the list of user IDs from the loaded cache."""
     return {"user_ids": list(cache['user_memories'].keys())}
+
+@app.delete("/user/{user_id}")
+async def remove_user(user_id: str):
+    """Remove a user and all their associated memories from the index.
+    
+    Args:
+        user_id (str): ID of the user to remove
+        
+    Returns:
+        dict: Stats about the operation
+    """
+    if not cache['memories']:
+        raise HTTPException(status_code=400, detail="No cache data loaded")
+        
+    try:
+        if user_id not in cache['user_memories']:
+            raise ValueError("User not found in memory index")
+            
+        # Create a backup of the current state
+        backup = {
+            'memories': cache['memories'].copy(),
+            'user_memories': {k: v.copy() for k, v in cache['user_memories'].items()},
+            'inverted_index': {k: v.copy() for k, v in cache['inverted_index'].items()},
+            'metadata': {
+                'last_modified': cache['metadata']['last_modified'],
+                'version': cache['metadata']['version'],
+                'memory_stats': {k: v.copy() for k, v in cache['metadata']['memory_stats'].items()}
+            }
+        }
+        
+        try:
+            # Get all memory IDs for this user
+            memory_ids_to_remove = sorted(cache['user_memories'][user_id], reverse=True)
+            
+            # Update metadata before removal
+            now = datetime.now().isoformat()
+            cache['metadata']['last_modified'] = now
+            
+            # Single pass: Remove memories and update all indices simultaneously
+            for memory_id in memory_ids_to_remove:
+                # Mark for deletion in metadata
+                cache['metadata']['memory_stats'][memory_id] = {
+                    'last_modified': now,
+                    'action': 'deleted'
+                }
+                
+                # Remove the memory
+                cache['memories'].pop(memory_id)
+                
+                # Update all higher indices in user_memories
+                for uid, mems in cache['user_memories'].items():
+                    cache['user_memories'][uid] = [
+                        mid if mid < memory_id else mid - 1 
+                        for mid in mems 
+                        if mid != memory_id
+                    ]
+                
+                # Update inverted index
+                for word in list(cache['inverted_index'].keys()):
+                    cache['inverted_index'][word] = [
+                        mid if mid < memory_id else mid - 1 
+                        for mid in cache['inverted_index'][word] 
+                        if mid != memory_id
+                    ]
+                    # Remove empty word entries
+                    if not cache['inverted_index'][word]:
+                        del cache['inverted_index'][word]
+            
+            # Remove user from memory mapping
+            del cache['user_memories'][user_id]
+            
+            # Clean up any orphaned memories
+            all_user_memories = set()
+            for user_memories in cache['user_memories'].values():
+                all_user_memories.update(user_memories)
+                
+            orphaned = [i for i in range(len(cache['memories'])) 
+                       if i not in all_user_memories]
+            
+            if orphaned:
+                # Remove orphaned memories in reverse order
+                for memory_id in sorted(orphaned, reverse=True):
+                    cache['memories'].pop(memory_id)
+                    
+                    # Update inverted index
+                    for word in list(cache['inverted_index'].keys()):
+                        cache['inverted_index'][word] = [
+                            mid if mid < memory_id else mid - 1 
+                            for mid in cache['inverted_index'][word] 
+                            if mid != memory_id
+                        ]
+                        if not cache['inverted_index'][word]:
+                            del cache['inverted_index'][word]
+            
+            # Return updated stats
+            active_memories = len([m for m in cache['memories'] if m is not None])
+            return {
+                "message": f"Successfully removed user {user_id} and {len(memory_ids_to_remove)} memories",
+                "stats": {
+                    "memories": active_memories,
+                    "users": len(cache['user_memories']),
+                    "index_terms": len(cache['inverted_index']),
+                    "memories_removed": len(memory_ids_to_remove),
+                    "orphaned_removed": len(orphaned)
+                }
+            }
+            
+        except Exception as e:
+            # Restore from backup on any error
+            cache['memories'] = backup['memories']
+            cache['user_memories'] = backup['user_memories']
+            cache['inverted_index'] = backup['inverted_index']
+            cache['metadata'] = backup['metadata']
+            raise ValueError(f"Error during user removal, restored from backup: {str(e)}")
+            
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error removing user {user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

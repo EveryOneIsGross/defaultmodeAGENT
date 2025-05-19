@@ -724,7 +724,7 @@ class RepoIndex:
         Returns:
             list: List of tuples containing (file_path, relevance_score)
         """
-        # Simple search implementation based on term frequency
+        # Search implementation based on term frequency
         query_words = set(re.findall(r'\b\w{3,}\b', query.lower()))
         if not query_words:
             return []

@@ -1,4 +1,4 @@
-aiohttp==3.10.10
+aiohttp==3.10.11
 anthropic==0.45.2
 colorama==0.4.6
 discord.py==2.4.0

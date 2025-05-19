@@ -29,4 +29,7 @@ agent/prompts/delphi
 agent/prompts/tars_ma
 agent/prompts/tars
 
+# cursor rules
+.cursor
+
 

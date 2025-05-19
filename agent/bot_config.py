@@ -147,7 +147,7 @@ class PersonaConfig(BaseModel):
     hippocampus_bandwidth: float = Field(default=0.4)
     memory_capacity: int = Field(default=16)
     use_hippocampus_reranking: bool = Field(default=True)
-    reranking_blend_factor: float = Field(default=0.7, description="Weight for blending initial search scores with reranking similarity (0-1)")
+    reranking_blend_factor: float = Field(default=0.8, description="Weight for blending initial search scores with reranking similarity (0-1)")
     minimum_reranking_threshold: float = Field(default=0.1, description="Minimum threshold for reranked memories")
 
 class NotionConfig(BaseModel):

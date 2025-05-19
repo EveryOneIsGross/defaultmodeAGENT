@@ -9,7 +9,6 @@ import re
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
-from discord_utils import strip_role_prefixes
 from logger import BotLogger
 
 class DMNProcessor:
@@ -17,7 +16,7 @@ class DMNProcessor:
     Default Mode Network (DMN) processor that implements background thought generation
     through random memory walks and associative combination.
     """
-    def __init__(self, memory_index, prompt_formats, system_prompts, bot, tick_rate=300, mode="forgetful"):
+    def __init__(self, memory_index, prompt_formats, system_prompts, bot, tick_rate=300, mode="conservative"):
         # Core components
         self.memory_index = memory_index
         self.prompt_formats = prompt_formats
@@ -26,8 +25,6 @@ class DMNProcessor:
         
         # Use bot's logger
         self.logger = bot.logger if hasattr(bot, 'logger') else logging.getLogger('bot.default')
-        
-        # API inference settings
 
         # Operational settings
         self.tick_rate = tick_rate  # Time between thought generations
@@ -63,17 +60,23 @@ class DMNProcessor:
             "forgetful": {
                 "combination_threshold": 0.02,  # Lower threshold = more memories combined
                 "decay_rate": 0.8,            # High decay = aggressive forgetting
-                "top_k": 12                  # More memories considered
+                "top_k": 12,                  # More memories considered
+                "fuzzy_overlap_threshold": 70, # Lower threshold for more fuzzy matches
+                "fuzzy_search_threshold": 80   # Lower threshold for more fuzzy searches
             },
             "homeostatic": {
                 "combination_threshold": 0.2,  # Balanced threshold
                 "decay_rate": 0.1,            # Moderate decay
-                "top_k": 16                  # Default memory window
+                "top_k": 16,                  # Default memory window
+                "fuzzy_overlap_threshold": 80, # Default fuzzy overlap threshold
+                "fuzzy_search_threshold": 90   # Default fuzzy search threshold
             },
             "conservative": {
                 "combination_threshold": 0.3,  # Higher threshold = fewer combinations
                 "decay_rate": 0.05,           # Very slow decay
-                "top_k": 8                   # Fewer memories considered
+                "top_k": 8,                   # Fewer memories considered
+                "fuzzy_overlap_threshold": 90, # Higher threshold for stricter matches
+                "fuzzy_search_threshold": 95   # Higher threshold for stricter searches
             }
         }
         
@@ -166,7 +169,7 @@ class DMNProcessor:
             
             try:
                 user = await self.bot.fetch_user(int(user_id))
-                user_name = strip_role_prefixes(user.name) if user else "Unknown User"
+                user_name = user.name if user else "Unknown User"
             except Exception as e:
                 user_name = "Unknown User"
             
