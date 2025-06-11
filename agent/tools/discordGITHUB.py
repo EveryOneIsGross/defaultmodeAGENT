@@ -114,6 +114,11 @@ class RepoIndex:
 
         return file_scores.most_common(k)
 
+    async def search_repo_async(self, query, k=5):
+        """Async wrapper around search_repo"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.search_repo, query, k)
+
     def clean_text(self, text):
         text = text.lower()
         text = text.translate(str.maketrans('', '', string.punctuation))

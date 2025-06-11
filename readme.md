@@ -179,7 +179,7 @@ graph LR
 
 The name `defaultMODE` reflects two key concepts:
 
-It serves as a "default" template—a modular foundation for building agents without reinventing core systems while providing sensible defaults with room for personalization. However, the name mostly references the human Default Mode Network (DMN)—brain regions active during rest and introspection. Like its neurological counterpart, our framework enables background cognitive processing where the agent homeostically regulates its memory space through term pruning and connection refinement. This self-regulation prevents memory bloat while preserving critical knowledge, allowing for emergent cognitive development that mimics human "mind-wandering" during idle periods.
+The name refers to the human Default Mode Network (DMN)—brain regions active during rest and introspection. Like its neurological counterpart, our framework enables background cognitive processing where the agent homeostically regulates its memory space through term pruning and connection refinement. This self-regulation prevents memory bloat while preserving critical knowledge, allowing for emergent cognitive development that mimics human "mind-wandering" during idle periods.
 
 ---
 
@@ -208,9 +208,10 @@ It serves as a "default" template—a modular foundation for building agents wit
 
 **Technical Overview**
 
-*   **Persistence:** Memories are persisted using an indexed file structure, ensuring data is preserved between sessions. JSONL logs and an SQLite database are included for auditing and analysis.
+*   **Persistence:** Memories are persisted using a bespoke inverted-index, ensuring data is preserved between sessions and can be all held in memory for fast inference.
+*   **Analysis:** JSONL logs and an SQLite database are included for auditing and analysis.
 *   **Configuration:** Managed via YAML files for prompt definitions and environment variables for sensitive credentials and API keys.
-*   **Code:** Written in Python, with an emphasis on clarity, modularity, and maintainability.
+*   **Code:** Python, with an emphasis on tool modularity. Abstractions will transfer to other social platforms eventually.
 *   **Dependencies:** Detailed in `requirements.txt`, including libraries for Discord interaction, LLM APIs, and data handling.
 
 ---

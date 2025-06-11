@@ -2,12 +2,39 @@
 import re, html, unicodedata, logging, asyncio, aiohttp
 from typing import TypedDict
 from bs4 import BeautifulSoup
+from yt_dlp import YoutubeDL
+
+from .chronpression import chronomic_filter
+
+# Content limits (in characters)
+MAX_TITLE_LENGTH = 200
+MAX_DESCRIPTION_LENGTH = 500
+MAX_CONTENT_LENGTH = 50000  # ~12,500 tokens
+MAX_TRANSCRIPT_LENGTH = 30000  # ~7,500 tokens for YouTube
+MAX_HTML_PREVIEW = 1000  # For error fallback
+PRESERVE_RATIO = 0.4  # Preserve 40% at start and 40% at end (80% total)
+
+# YouTube URL patterns
+YOUTUBE_PATTERNS = [
+    r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
+    r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
+    r'(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+    r'(?:https?://)?(?:www\.)?youtube\.com/v/([a-zA-Z0-9_-]{11})',
+    r'(?:https?://)?(?:www\.)?m\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})'
+]
+
+def is_youtube_url(url: str) -> tuple[bool, str]:
+    """Check if URL is YouTube and extract video ID"""
+    for pattern in YOUTUBE_PATTERNS:
+        match = re.search(pattern, url)
+        if match:
+            return True, match.group(1)
+    return False, None
 
 async def scrape_webpage(url: str) -> dict:
     """
     Robust, single-entry async scraper that always returns the same keys:
     {url, title, description, content, content_type, error_info}
-    Error info contains any error details while still returning partial content
     """
     logging.info(f"Starting to scrape URL: {url}")
     
@@ -17,9 +44,208 @@ async def scrape_webpage(url: str) -> dict:
         description: str
         content: str
         content_type: str
-        error_info: dict  # Contains error details if any: {code, message, phase}
+        error_info: dict
 
-    # ── tiny helpers ──────────────────────────────────────────────────────────
+    # Helper functions
+    def truncate_middle(text: str, max_length: int, preserve_ratio: float = PRESERVE_RATIO) -> str:
+        """Truncate text from the middle, preserving start and end."""
+        if not text or len(text) <= max_length:
+            return text
+        
+        preserve_chars = int(max_length * preserve_ratio)
+        start_chars = preserve_chars // 2
+        end_chars = preserve_chars // 2
+        
+        start_break = start_chars
+        end_break = len(text) - end_chars
+        
+        # Find sentence boundaries
+        for punct in ['. ', '.\n', '! ', '!\n', '? ', '?\n', '\n\n']:
+            pos = text.find(punct, start_chars, min(start_chars + 500, len(text)))
+            if pos != -1:
+                start_break = pos + len(punct)
+                break
+        
+        truncation_notice = "\n\n[... content truncated ...]\n\n"
+        return text[:start_break].rstrip() + truncation_notice + text[end_break:].lstrip()
+
+    def truncate_field(text: str, max_length: int) -> str:
+        """Simple truncation for short fields."""
+        if not text or len(text) <= max_length:
+            return text
+        return text[:max_length-3] + "..."
+
+    def partial_result(error_code: str, error_msg: str, phase: str, **kwargs) -> Result:
+        """Return partial results with error info"""
+        logging.warning(f"Error in {phase} for {url}: {error_msg}")
+        return Result(
+            url=url,
+            title=truncate_field(kwargs.get('title', url), MAX_TITLE_LENGTH),
+            description=truncate_field(kwargs.get('description', f"Error: {error_msg}"), MAX_DESCRIPTION_LENGTH),
+            content=kwargs.get('content', ''),
+            content_type=kwargs.get('content_type', "error"),
+            error_info={
+                'code': error_code,
+                'message': error_msg,
+                'phase': phase
+            }
+        )
+
+    # Check if YouTube URL
+    is_yt, video_id = is_youtube_url(url)
+    
+    if is_yt:
+        logging.info(f"Detected YouTube video ID: {video_id}")
+        
+        # Use yt-dlp for YouTube processing
+        async def scrape_youtube() -> dict:
+            """Extract YouTube video metadata and transcript using yt-dlp."""
+            try:
+                loop = asyncio.get_event_loop()
+                
+                # Get video info + transcript using yt-dlp
+                def get_video_data():
+                    ydl_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': False,
+                        'skip_download': True,
+                        'writesubtitles': True,
+                        'writeautomaticsub': True,
+                        'subtitleslangs': ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU'],
+                        'subtitlesformat': 'vtt'
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        
+                        # Extract transcript from available subtitles
+                        transcript_text = ""
+                        
+                        # First try manual subtitles, then automatic
+                        subtitle_sources = [
+                            info.get('subtitles', {}),
+                            info.get('automatic_captions', {})
+                        ]
+                        
+                        for subtitle_dict in subtitle_sources:
+                            if transcript_text:  # Already found subtitles
+                                break
+                                
+                            # Try different language codes
+                            for lang in ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU']:
+                                if lang in subtitle_dict:
+                                    subtitle_formats = subtitle_dict[lang]
+                                    
+                                    # Find a VTT format
+                                    for sub_format in subtitle_formats:
+                                        if sub_format.get('ext') == 'vtt' and 'url' in sub_format:
+                                            try:
+                                                # Download the subtitle content
+                                                import urllib.request
+                                                with urllib.request.urlopen(sub_format['url']) as response:
+                                                    vtt_content = response.read().decode('utf-8')
+                                                    
+                                                # Parse VTT content to extract just the text
+                                                lines = vtt_content.split('\n')
+                                                text_lines = []
+                                                
+                                                for line in lines:
+                                                    line = line.strip()
+                                                    # Skip VTT metadata, timestamps, and empty lines
+                                                    if (line and 
+                                                        not line.startswith('WEBVTT') and 
+                                                        '-->' not in line and 
+                                                        not line.startswith('NOTE') and
+                                                        not line.isdigit()):
+                                                        # Remove VTT formatting tags
+                                                        clean_line = re.sub(r'<[^>]+>', '', line)
+                                                        if clean_line and clean_line not in text_lines:
+                                                            text_lines.append(clean_line)
+                                                
+                                                transcript_text = ' '.join(text_lines)
+                                                break
+                                                
+                                            except Exception as e:
+                                                logging.warning(f"Failed to download subtitle from {sub_format['url']}: {e}")
+                                                continue
+                                    
+                                    if transcript_text:
+                                        break
+                        
+                        return {
+                            'title': info.get('title', 'Unknown Title'),
+                            'channel': info.get('channel', info.get('uploader', 'Unknown Channel')),
+                            'duration': info.get('duration', 0),
+                            'views': info.get('view_count', 0),
+                            'description': info.get('description', ''),
+                            'upload_date': info.get('upload_date', ''),
+                            'video_id': info.get('id', video_id),
+                            'transcript': transcript_text
+                        }
+                
+                video_data = await loop.run_in_executor(None, get_video_data)
+                logging.info(f"Successfully retrieved video data: {video_data['title']}")
+                
+                # Apply chronomic filtering to transcript if available
+                transcript_text = video_data['transcript']
+                transcript_error = None
+                
+                if transcript_text:
+                    try:
+                        transcript_text = chronomic_filter(
+                            transcript_text,
+                            alpha=0.3,
+                            beta=3.0
+                        )
+                    except Exception as e:
+                        transcript_error = {
+                            'code': 'CHRONOMIC_ERROR',
+                            'message': str(e),
+                            'phase': 'filtering'
+                        }
+                        logging.warning(f"Chronomic filtering error: {e}")
+                else:
+                    transcript_text = "[Transcript not available]"
+                
+                # Format content
+                content_parts = [
+                    f"# {truncate_field(video_data['title'], MAX_TITLE_LENGTH)}",
+                    "",
+                    f"**Channel**: {video_data['channel']}",
+                    f"**Duration**: {video_data['duration']//60}:{video_data['duration']%60:02d}" if video_data['duration'] else "**Duration**: Unknown",
+                    f"**Views**: {video_data['views']:,}" if video_data['views'] else "**Views**: Unknown",
+                    f"**URL**: {url}",
+                    "",
+                    "## Description",
+                    truncate_middle(video_data['description'] or 'No description', 5000),
+                    "",
+                    "## Transcript",
+                    truncate_middle(transcript_text, MAX_TRANSCRIPT_LENGTH)
+                ]
+                
+                content = "\n".join(content_parts)
+                
+                return Result(
+                    url=url,
+                    title=truncate_field(video_data['title'], MAX_TITLE_LENGTH),
+                    description=truncate_field(
+                        f"YouTube video by {video_data['channel']}" + 
+                        (f" - {video_data['duration']//60}m" if video_data['duration'] else ""),
+                        MAX_DESCRIPTION_LENGTH
+                    ),
+                    content=content,
+                    content_type='youtube',
+                    error_info=transcript_error or {}
+                )
+                
+            except Exception as e:
+                logging.exception(f"YouTube scraping failed")
+                return partial_result('YT_ERROR', str(e), 'youtube', title=f"Video: {video_id}")
+        
+        return await scrape_youtube()
+
+    # Regular HTML scraping for non-YouTube URLs
     BAD_UI = re.compile(
         r"(cookie|accept|subscribe|sign[\s-]?up|sign[\s-]?in|login|password|username|"
         r"newsletter|privacy\s+policy|terms\s+of\s+service|copyright)",
@@ -28,195 +254,82 @@ async def scrape_webpage(url: str) -> dict:
 
     def is_sig(block: str) -> bool:
         block = block.strip()
-        if len(block) < 30 or BAD_UI.search(block):          # too short / boiler-plate
+        if len(block) < 30 or BAD_UI.search(block):
             return False
-        if not any(c in block for c in ".!?"):               # no sentences → nav
+        if not any(c in block for c in ".!?"):
             return False
         spec_ratio = sum(1 for c in block if not (c.isalnum() or c.isspace())) / len(block)
-        if spec_ratio > 0.33:                                # code/glyph soup
+        if spec_ratio > 0.33:
             return False
         w = block.lower().split()
-        return not (len(w) > 5 and len(set(w)) / len(w) < 0.5)  # repeated words
+        return not (len(w) > 5 and len(set(w)) / len(w) < 0.5)
 
     def clean(txt: str) -> str:
         txt = html.unescape(txt)
         txt = unicodedata.normalize("NFKC", txt)
         return re.sub(r"\s+", " ", txt).strip()
 
-    def partial_result(error_code: str, error_msg: str, phase: str, **kwargs) -> Result:
-        """Return partial results with error info instead of failing completely"""
-        logging.warning(f"Error in {phase} for {url}: {error_msg}")
+    # Fetch HTML
+    try:
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=hdrs, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                if r.status >= 400:
+                    return partial_result(f'HTTP_{r.status}', f"HTTP {r.status}", 'fetch')
+                
+                html_text = await r.text()
+                
+        # Parse HTML
+        soup = BeautifulSoup(html_text, "html.parser")
+        
+        # Remove unwanted elements
+        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'iframe', 'form']):
+            element.decompose()
+        
+        # Extract content
+        main_content = None
+        for selector in ['article', 'main', '[role="main"]', '.content', '#content']:
+            main_content = soup.select_one(selector)
+            if main_content:
+                break
+        
+        if main_content:
+            content = clean(main_content.get_text(" ", strip=True))
+        else:
+            # Fallback to paragraph extraction
+            blocks = []
+            for elem in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                text = elem.get_text(" ", strip=True)
+                if is_sig(text) and text not in blocks:
+                    blocks.append(text)
+            content = "\n\n".join(blocks)
+        
+        if not content:
+            return partial_result('NO_CONTENT', 'No content found', 'extraction')
+
+        # Apply chronomic filtering to web content
+        try:
+            content = chronomic_filter(content, alpha=0.3, beta=3.0)
+        except Exception as e:
+            logging.warning(f"Chronomic filtering failed for web content: {e}")
+            # Continue with unfiltered content
+        
+        title = soup.title.string if soup.title else url
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        description = meta_desc.get("content", "") if meta_desc else ""
+        
         return Result(
             url=url,
-            title=kwargs.get('title', url),
-            description=kwargs.get('description', f"Partial content - {error_msg}"),
-            content=kwargs.get('content', ''),
-            content_type=kwargs.get('content_type', "partial"),
-            error_info={
-                'code': error_code,
-                'message': error_msg,
-                'phase': phase
-            }
+            title=truncate_field(title.strip(), MAX_TITLE_LENGTH),
+            description=truncate_field(description.strip(), MAX_DESCRIPTION_LENGTH),
+            content=truncate_middle(content, MAX_CONTENT_LENGTH),
+            content_type="text/html",
+            error_info={}
         )
-
-    # ── fetch with back-off ───────────────────────────────────────────────────
-    async def fetch_html() -> tuple[str, str, dict | None]:
-        hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0"}
-        last_error = None
-        for delay in (0, 2, 5):
-            try:
-                logging.debug(f"Attempt {delay+1} to fetch {url}")
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(url, headers=hdrs, timeout=15) as r:
-                        if r.status >= 400:
-                            last_error = {'code': str(r.status), 'message': f"HTTP {r.status}", 'phase': 'fetch'}
-                            if delay == 4:  # Last attempt
-                                return None, None, last_error
-                            continue
-                        ctype = r.headers.get("content-type", "")
-                        logging.debug(f"Content-Type: {ctype}")
-                        return ctype, await r.text(), None
-            except Exception as e:
-                last_error = {'code': type(e).__name__, 'message': str(e), 'phase': 'fetch'}
-                logging.warning(f"Fetch attempt {delay+1} failed: {str(e)}")
-                if delay:
-                    await asyncio.sleep(delay)
-                continue
-        return None, None, last_error
-
-    try:
-        ctype, html_text, fetch_error = await fetch_html()
-        if not html_text:
-            return partial_result(
-                fetch_error['code'],
-                fetch_error['message'],
-                'fetch'
-            )
         
-        if "text/html" not in (ctype or "").lower():
-            return partial_result(
-                'INVALID_CONTENT_TYPE',
-                f"Non-HTML content type ({ctype})",
-                'content_check',
-                content_type=ctype
-            )
-
-        # ── main extraction via BeautifulSoup ───────────────────────────────────
-        try:
-            logging.debug("Starting BeautifulSoup parsing")
-            soup = BeautifulSoup(html_text, "html.parser")
-            
-            # Remove unwanted elements
-            for element in soup(['script', 'style', 'nav', 'header', 'footer', 'iframe', 'form']):
-                element.decompose()
-            
-            # Extract main content - prioritize article or main tags
-            main_content = None
-            for tag in ['article', 'main', 'div[role="main"]', '.content', '#content', '.post', '.article']:
-                main_content = soup.select_one(tag)
-                if main_content:
-                    logging.debug(f"Found main content using selector: {tag}")
-                    break
-            
-            content = ""
-            extraction_error = None
-            
-            if main_content:
-                content = main_content.get_text(" ", strip=True)
-                logging.debug("Extracted content from main content area")
-            else:
-                logging.debug("No main content found, falling back to block extraction")
-                blocks = [t.get_text(" ", strip=True) for t in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])]
-                seen, sig_blocks = set(), []
-                for b in blocks:
-                    if b not in seen and is_sig(b):
-                        seen.add(b)
-                        sig_blocks.append(b)
-                content = "\n\n".join(sig_blocks)
-                if not sig_blocks:
-                    extraction_error = {
-                        'code': 'NO_MAIN_CONTENT',
-                        'message': 'No main content container found',
-                        'phase': 'extraction'
-                    }
-                logging.debug(f"Extracted {len(sig_blocks)} significant blocks")
-
-            content = clean(content)
-            title = (soup.title.string if soup.title else url).strip()
-            meta_desc = soup.find("meta", attrs={"name": "description"})
-            description = (meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else "")
-
-            if not content:
-                return partial_result(
-                    'NO_CONTENT',
-                    "No meaningful content extracted",
-                    'extraction',
-                    title=title,
-                    description=description
-                )
-
-            logging.info(f"Successfully scraped {url}")
-            return Result(
-                url=url,
-                title=title,
-                description=description,
-                content=content,
-                content_type="text/html",
-                error_info=extraction_error or {}
-            )
-
-        except Exception as e:
-            logging.error(f"BeautifulSoup parsing failed for {url}: {str(e)}")
-            # Try fallback parsing
-            logging.debug("Attempting fallback parsing")
-            try:
-                soup_all = BeautifulSoup(html_text, "html.parser")
-                for t in soup_all(["script", "style", "nav", "footer"]):
-                    t.decompose()
-                blocks = [t.get_text(" ", strip=True) for t in soup_all.find_all(text=True)]
-                seen, sig_blocks = set(), []
-                for b in blocks:
-                    if b not in seen and is_sig(b):
-                        seen.add(b)
-                        sig_blocks.append(b)
-                content = "\n\n".join(sig_blocks)
-                logging.debug(f"Fallback parsing found {len(sig_blocks)} blocks")
-
-                content = clean(content)
-                title = (soup_all.title.string if soup_all.title else url).strip()
-                meta_desc = soup_all.find("meta", attrs={"name": "description"})
-                description = (meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else "")
-
-                if not content:
-                    return partial_result(
-                        'FALLBACK_NO_CONTENT',
-                        "No content from fallback parsing",
-                        'fallback',
-                        title=title,
-                        description=description
-                    )
-
-                return Result(
-                    url=url,
-                    title=title,
-                    description=description,
-                    content=content,
-                    content_type="text/html",
-                    error_info={'code': 'USED_FALLBACK', 'message': str(e), 'phase': 'parsing'}
-                )
-            except Exception as fallback_e:
-                return partial_result(
-                    'FALLBACK_FAILED',
-                    str(fallback_e),
-                    'fallback',
-                    content=html_text[:1000] if html_text else ''  # Return raw HTML snippet as last resort
-                )
-
-    except Exception as exc:
-        logging.exception(f"scrape_webpage failure for {url}")
-        return partial_result(
-            'CRITICAL_ERROR',
-            str(exc),
-            'unknown',
-            content=html_text[:1000] if html_text else ''
-        )
+    except Exception as e:
+        logging.exception(f"Scraping failed for {url}")
+        return partial_result('SCRAPE_ERROR', str(e), 'general')

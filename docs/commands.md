@@ -17,6 +17,7 @@
 | `!kill` | Stop the bot | ✓ | ✗ | ✗ |
 | `!resume` | Resume the bot | ✓ | ✗ | ✗ |
 | `!get_logs` | Get bot logs | ✓ | ✗ | ✗ |
+| `!reranking` | Disable hippocampus embedding | ✓ | ✗ | ✗ |
 
 ## Permission Requirements
 

@@ -18,9 +18,6 @@ import argparse
 import threading
 import re
 
-# Discord Format Handling
-from discord_utils import sanitize_mentions, format_discord_mentions
-
 # Configuration imports
 from bot_config import (
     config,
@@ -59,6 +56,9 @@ from memory import UserMemoryIndex, CacheManager
 from defaultmode import DMNProcessor
 from chunker import truncate_middle, clean_response, balance_wraps
 from temporality import TemporalParser
+
+# Discord Format Handling
+from discord_utils import sanitize_mentions, format_discord_mentions
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -118,20 +118,7 @@ def currentmoment():
 
 # background processing module
 def start_background_processing_thread(repo, memory_index, max_depth=None, branch='main', channel=None):
-    """
-    Start a background thread to process and index repository contents.
 
-    Args:
-        repo (GitHubRepo): The GitHub repository interface to process
-        memory_index (UserMemoryIndex): Index for storing repository content memories
-        max_depth (int, optional): Maximum directory depth to process. None means unlimited. Defaults to None.
-        branch (str, optional): Git branch to process. Defaults to 'main'.
-
-    The function:
-    1. Creates a new thread targeting run_background_processing()
-    2. Starts the thread to process repo contents asynchronously 
-    3. Logs the start of background processing
-    """
     thread = threading.Thread(target=run_background_processing, args=(repo, memory_index, max_depth, branch))
     thread.start()
     bot.logger.info(f"Started background processing of repository contents in a separate thread (Branch: {branch}, Max Depth: {max_depth if max_depth is not None else 'Unlimited'})")
@@ -373,7 +360,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             memory_text = (
                 f"User @{user_name} in #{channel_name} ({timestamp}): "
                 f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
-                f"{bot.user.name}: {response_content}"
+                f"@{bot.user.name}: {response_content}"
             )
             memory_index.add_memory(user_id, memory_text)
             
@@ -532,7 +519,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                             bot.logger.info(f"Large image opened: {img.format}, {img.size}, {img.mode}")
 
                             # Aggressive resize
-                            MAX_DIMENSION = 1024 # Still use a dimension cap
+                            MAX_DIMENSION = 512 # Still use a dimension cap
                             img.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
                             bot.logger.info(f"Resized large image to fit within {MAX_DIMENSION}x{MAX_DIMENSION}")
 
@@ -663,7 +650,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     context=context,
                     image_files="\n".join(image_files),
                     text_files="\n".join(f"{t['filename']}: {truncate_middle(t['content'], 1000)}" for t in text_contents),
-                    user_message=user_message if user_message else "Please analyze these files."
+                    user_message=user_message if user_message else "Please analyze these files.",
+                    user_name=user_name
                 )
                 system_prompt = system_prompts['combined_analysis'].replace(
                     '{amygdala_response}',
@@ -673,7 +661,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 prompt = prompt_formats['analyze_image'].format(
                     context=context,
                     filename=", ".join(image_files),
-                    user_message=user_message if user_message else "Please analyze these images."
+                    user_message=user_message if user_message else "Please analyze these images.",
+                    user_name=user_name
                 )
                 system_prompt = system_prompts['image_analysis'].replace(
                     '{amygdala_response}',
@@ -685,7 +674,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     context=context,
                     filename=", ".join(t['filename'] for t in text_contents),
                     file_content=combined_text,
-                    user_message=user_message
+                    user_message=user_message,
+                    user_name=user_name
                 )
                 system_prompt = system_prompts['file_analysis'].replace(
                     '{amygdala_response}',
@@ -724,9 +714,13 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
             
             # Create memory with file analysis context and include bot author details
-            memory_text = f"({timestamp}) Grokking {' and '.join(files_description)} for User @{user_name} in #{channel_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}\n{bot.user.name}: {response_content}"
+            memory_text = f"({timestamp}) Grokking {' and '.join(files_description)} for User @{user_name} in #{channel_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}\n@{bot.user.name}: {response_content}"
             
             memory_index.add_memory(user_id, memory_text)
+            
+            # ugly hack to ensure the typing indicator doesn't retrigger for thought generation
+            # if I seperate the thought generation into a seperate function later maybe I can ditch the timer
+            await asyncio.sleep(0.5)  
             
             # Create background task for thought generation
             asyncio.create_task(generate_and_save_thought(
@@ -1106,7 +1100,7 @@ class CustomHelpCommand(commands.HelpCommand):
                 inline=True
             )
 
-        # Group commands by category with optimized field sizes
+        # Group commands by category - simplified approach
         for cog, commands in mapping.items():
             filtered = await self.filter_commands(commands, sort=True)
             if filtered:
@@ -1116,32 +1110,17 @@ class CustomHelpCommand(commands.HelpCommand):
                 for cmd in filtered:
                     if not cmd.hidden or is_manager:
                         brief = cmd.help.split('\n')[0] if cmd.help else "No description"
-                        # Truncate long descriptions
-                        if len(brief) > 75:
-                            brief = brief[:72] + "..."
+                        # Simple truncation if needed
+                        if len(brief) > 60:
+                            brief = brief[:57] + "..."
                         command_list.append(f"`!{cmd.name}` - {brief}")
                 
-                # this seems to be overkill and was probably Gemini being a edge-case over achiever
-                # come back and re evaluate the conditions that triggers this as it triggers unecessary 
                 if command_list:
-                    # Split into multiple fields if needed
-                    value = "\n".join(command_list)
-                    while len(value) > 1000:
-                        split_idx = value.rfind('\n', 0, 1000)
-                        if split_idx == -1:
-                            split_idx = 1000
-                        embed.add_field(
-                            name=f"📑 {category} (continued)",
-                            value=value[:split_idx],
-                            inline=False
-                        )
-                        value = value[split_idx:].lstrip()
-                    if value:
-                        embed.add_field(
-                            name=f"📑 {category}",
-                            value=value,
-                            inline=False
-                        )
+                    embed.add_field(
+                        name=f"📑 {category}",
+                        value="\n".join(command_list),
+                        inline=False
+                    )
 
         await self.get_destination().send(embed=embed)
 
@@ -1185,7 +1164,7 @@ class CustomHelpCommand(commands.HelpCommand):
                 )
 
         await self.get_destination().send(embed=embed)
-
+    
 def setup_bot(prompt_path=None, bot_id=None):
     """Initialize the Discord bot with specified configuration."""
     intents = discord.Intents.default()
@@ -1425,7 +1404,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def summarize(ctx, *, args=None):
         """Summarize the last n messages in a specified channel and send the summary to DM."""
         try:
-            n = 100  # Default value
+            n = 20  # Default value
             channel = None
 
             if args:

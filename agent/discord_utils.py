@@ -126,6 +126,13 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                     # because Discord doesn't render <@id> format properly in DMs
                     content = content.replace(f"@{name}", member.display_name)
             
+            # Also handle bare usernames (without @) in DMs and convert to display names
+            for name in sorted_names:
+                if name in content and name.lower() not in [a.lower() for a in code_annotations]:
+                    member = all_members[name]
+                    #content = content.replace(name, member.display_name)
+                    content = re.sub(r'\b' + re.escape(name) + r'\b', member.display_name, content)
+            
             # Replace each channel with channel mention or name
             for name in sorted_channels:
                 if f"#{name}" in content:
@@ -166,6 +173,12 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                 if f"@{member_name}" in content:
                     content = content.replace(f"@{member_name}", f"<@{member.id}>")
             
+            # Also handle bare usernames (without @) and convert to Discord mentions
+            for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                if member_name in content and member_name.lower() not in [a.lower() for a in code_annotations]:
+                    #content = content.replace(member_name, f"<@{member.id}>")
+                    content = re.sub(r'\b' + re.escape(member_name) + r'\b', f"<@{member.id}>", content)
+            
             # Handle channel name to channel mention conversion
             for channel_name, channel in sorted(channels_dict.items(), key=lambda x: len(x[0]), reverse=True):
                 if f"#{channel_name}" in content:
@@ -184,6 +197,12 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                 elif mention.lower() in members_dict:
                     member = members_dict[mention.lower()]
                     content = content.replace(f"@{mention}", member.display_name)
+            
+            # Also handle bare usernames (without @) and convert to display names
+            for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                if member_name in content and member_name.lower() not in [a.lower() for a in code_annotations]:
+                    #content = content.replace(member_name, member.display_name)
+                    content = re.sub(r'\b' + re.escape(member_name) + r'\b', member.display_name, content)
             
             # Process channel mentions
             channel_mentions = re.findall(r'#([\w.\-_]+)', content)

@@ -3,6 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from collections import defaultdict
 from api_client import call_api
+from discord_utils import sanitize_mentions, format_discord_mentions
 
 # Channel summarization
 class ChannelSummarizer:
@@ -87,12 +88,20 @@ class ChannelSummarizer:
         content_chunks = []
         
         for message in messages:
-            user_message_counts[message.author.name] += 1
+            # Use display_name instead of name for better user identification
+            user_message_counts[message.author.display_name] += 1
             for attachment in message.attachments:
                 file_type = attachment.filename.split('.')[-1].lower()
                 file_types[file_type] += 1
             
-            content_chunks.append(f"{message.author.name}: {message.content}")
+            # Sanitize the message content to convert mentions to readable names
+            sanitized_content = sanitize_mentions(
+                message.content,
+                message.mentions + message.channel_mentions + message.role_mentions
+            )
+            
+            # Add the sanitized message to chunks with author's display name
+            content_chunks.append(f"{message.author.display_name}: {sanitized_content}")
 
         summary = f"{context}\n"
         summary += "Participants:\n"

@@ -291,45 +291,13 @@ class DMNProcessor:
                 for seed_term, matches in fuzzy_matches.items():
                     self.logger.info(f"Fuzzy matches for '{seed_term}': {', '.join(matches)}")
                 
-                # Remove overlapping terms from results (preserve in seed)
-                affected_memories = []
-                for memory, memory_id in top_memories[1:]:  # Skip seed memory
-                    terms_removed = memory_terms_map[memory_id] & overlapping_terms
-                    remaining_terms = memory_terms_map[memory_id] - overlapping_terms
-                    if terms_removed:
-                        affected_memories.append((memory, terms_removed))
-                        self.logger.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
-                        self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
-                        
-                        # Update inverted index directly
-                        for term in terms_removed:
-                            if term in self.memory_index.inverted_index:
-                                self.memory_index.inverted_index[term] = [
-                                    mid for mid in self.memory_index.inverted_index[term] 
-                                    if mid != memory_id
-                                ]
-                                # Clean up empty terms
-                                if not self.memory_index.inverted_index[term]:
-                                    del self.memory_index.inverted_index[term]
-                                    self.logger.info(f"Removed empty term entry: {term}")
-
-                # Update memory weights for affected results
-                for memory, memory_id in top_memories[1:]:  # Skip seed memory
-                    original_terms = memory_terms_map[memory_id]
-                    removed_terms = len(original_terms & overlapping_terms)
-                    if len(original_terms) > 0:
-                        decay = removed_terms / len(original_terms)
-                        # Use user-specific weight decay
-                        self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
-                        self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
-
-                # Save the updated index
-
-                #self.memory_index.save_cache()
-                self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
-                
-                # Add cleanup here after pruning
-                # self._cleanup_disconnected_memories()
+                # Store the state for post-processing
+                memory_update_state = {
+                    'user_id': user_id,
+                    'top_memories': top_memories,
+                    'memory_terms_map': memory_terms_map,
+                    'overlapping_terms': overlapping_terms
+                }
 
         # Replace timestamp generation with temporal expression
         current_time = datetime.now()
@@ -417,8 +385,49 @@ class DMNProcessor:
             # Store memory without metadata
             self.memory_index.add_memory(user_id, thought_memory)
             
-            # Add cleanup here after new memory addition
+            # Process memory weights and cleanup if we have memory state
+            if 'memory_update_state' in locals():
+                state = memory_update_state
+                affected_memories = []
+
+                # First remove overlapping terms
+                for memory, memory_id in state['top_memories'][1:]:  # Skip seed memory
+                    terms_removed = state['memory_terms_map'][memory_id] & state['overlapping_terms']
+                    remaining_terms = state['memory_terms_map'][memory_id] - state['overlapping_terms']
+                    if terms_removed:
+                        affected_memories.append((memory, terms_removed))
+                        self.logger.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
+                        self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
+                        
+                        # Update inverted index directly
+                        for term in terms_removed:
+                            if term in self.memory_index.inverted_index:
+                                self.memory_index.inverted_index[term] = [
+                                    mid for mid in self.memory_index.inverted_index[term] 
+                                    if mid != memory_id
+                                ]
+                                # Clean up empty terms
+                                if not self.memory_index.inverted_index[term]:
+                                    del self.memory_index.inverted_index[term]
+                                    self.logger.info(f"Removed empty term entry: {term}")
+
+                # Then update weights
+                for memory, memory_id in state['top_memories'][1:]:  # Skip seed memory
+                    original_terms = state['memory_terms_map'][memory_id]
+                    removed_terms = len(original_terms & state['overlapping_terms'])
+                    if len(original_terms) > 0:
+                        decay = removed_terms / len(original_terms)
+                        # Use user-specific weight decay
+                        self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
+                        self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
+                self.memory_index.save_cache()
+                self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
+
+            # Add cleanup here after new memory addition and weight updates
             self._cleanup_disconnected_memories()
+            
+            # Save the cache after all updates
+            # self.memory_index.save_cache()
             
             # Log successful thought generation
             self.logger.log({
