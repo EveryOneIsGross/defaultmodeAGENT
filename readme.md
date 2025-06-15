@@ -11,18 +11,14 @@
 # Features and Abilities
 
 - Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
-- Youtube and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
-- Mentioning logic for agent 2 agent interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics
+- `Youtube` and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
+- Mentioning logic for `agent 2 agent` interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics
 - Easily defined prompt library - For bespoke NL persona and agent-personalising-memory "style", creating emergent preferences over time
-- Always dreaming ticker for lightweight background memory processing - Without rigid graph boundaries and baked embeddings, mimicking natural memory consolidation
 - Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
-- Sovereignty-forward architecture - Despite DISCORD API and SOTA cloud services, framework focuses on running your infrastructure on your own servers/PC
 - Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
 - Neurologically-inspired memory architecture - Default Mode Network (DMN) processor creates continuous background thought generation through associative memory walks
-- Adaptive emotional regulation - Integrated amygdala response system that modulates conversation temperature based on memory density and context richness
+- Adaptive emotional regulation - Integrated amygdala response system that modulates temperature, defined prompt behavior intensity, based on homeostatic memory density and context richness
 - Hippocampus-style memory reranking - Hybrid lexical-semantic scoring system that blends keyword search with vector embeddings for human-like memory recall
-- Dynamic personality evolution - Memory density feedback loops create emergent conversational patterns that adapt the agent's personality over time
-- Bidirectional cognitive feedback - Background processing continuously reshapes memory landscape while informing real-time conversational behavior
 
 ---
 
