@@ -6,9 +6,23 @@
 
 # defaultMODE: Emergent Self-Regulating AI Entities
 
-`defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on at inference *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user bots exhibit confusion about their role and reward signals over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn.
+`defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on at inference-time *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user bots exhibit confusion about their role and reward signals over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context is a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
 
-Managing an agentic prompt context is a dark art. This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
+# Features and Abilities
+
+- Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
+- Youtube and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
+- Mentioning logic for agent 2 agent interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics
+- Easily defined prompt library - For bespoke NL persona and agent-personalising-memory "style", creating emergent preferences over time
+- Always dreaming ticker for lightweight background memory processing - Without rigid graph boundaries and baked embeddings, mimicking natural memory consolidation
+- Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
+- Sovereignty-forward architecture - Despite DISCORD API and SOTA cloud services, framework focuses on running your infrastructure on your own servers/PC
+- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
+- Neurologically-inspired memory architecture - Default Mode Network (DMN) processor creates continuous background thought generation through associative memory walks
+- Adaptive emotional regulation - Integrated amygdala response system that modulates conversation temperature based on memory density and context richness
+- Hippocampus-style memory reranking - Hybrid lexical-semantic scoring system that blends keyword search with vector embeddings for human-like memory recall
+- Dynamic personality evolution - Memory density feedback loops create emergent conversational patterns that adapt the agent's personality over time
+- Bidirectional cognitive feedback - Background processing continuously reshapes memory landscape while informing real-time conversational behavior
 
 ---
 
@@ -37,7 +51,7 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
     *   **Inverted Index with TF-IDF Weighting:** A simple inverted index provides fast memory retrieval.  The *search* process incorporates an IDF (Inverse Document Frequency) weighting scheme, similar to TF-IDF, prioritizing memories with rarer, more distinctive terms. Memories are connected by shared, weighted terms.
     *   **Term Pruning:**  Overlapping terms between related memories are *removed* during reflection, forcing memories to become more strongly associated with their *unique* content.  This drives specialization and reduces generic responses.
     *   **Hippocampal Formation (Embedding-Based Reranking):**  At inference time, candidate memories are reranked using an embedding model, surfacing the most contextually relevant memories. The selection bandwidth is tied to the amygdala response.
-    *   **Temporal Context Parsing:**  Natural time expressions are parsed and integrated into the agent's context.
+    *   **Temporal Context Parsing:**  Time expressions are parsed as naturual language (vs timestamps) and integrated into the agent's context.
     *   **Intelligence through Selective Attention:** The system focuses on relevant information rather than comprehensive knowledge.
 
 *   **Default Mode Network (DMN) Simulation:** A background process (`DMNProcessor`) mimics aspects of the brain's DMN:
@@ -64,7 +78,7 @@ Managing an agentic prompt context is a dark art. This cognitive framework is de
 
 *   **Persistence and Configuration:**
 
-    * **Memory Persistence**: User memories and are semantically linked in an indexed file structure, persisting between sessions, influencing personality and evolving with agent.
+    * **Memory Persistence**: User memories are semantically linked in an indexed file structure, persisting between sessions, influencing personality and evolving with agent.
     *   **File Caching:**  Manages temporary files for performance and privacy.
     *   **Configuration Storage:** Uses YAML files and environment variables for flexible and secure configuration.
     *   **Runtime Adjustable Parameters:**  Allows adjusting settings like temperature during runtime.

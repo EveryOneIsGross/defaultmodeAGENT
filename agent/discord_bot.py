@@ -74,6 +74,7 @@ ALLOWED_IMAGE_EXTENSIONS = config.files.allowed_image_extensions
 DISCORD_BOT_MANAGER_ROLE = config.discord.bot_manager_role
 TICK_RATE = config.system.tick_rate
 MEMORY_CAPACITY = config.persona.memory_capacity
+MOOD_COEFF = config.persona.mood_coefficient
 
 # JSONL logging setup
 def log_to_jsonl(data, bot_id=None):
@@ -199,8 +200,6 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
 
     try:
         response_content = None
-        # Start typing state maintenance in background
-        typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         
         try:
             is_dm = isinstance(message.channel, discord.DMChannel)
@@ -214,12 +213,15 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     conversation_context += f"@{clean_name}: {msg_content}\n"
 
-            # Build search query
-            # Combine current message with context for search, uses query AND context, it was causing too much generalisation
-            # search_query = f"{sanitized_content}\n\nConversation context:\n{conversation_context}"
-            
-            # use only the current message for search, the broader context is making the search too broad
-            search_query = f"{sanitized_content}"
+            # Enhance search query with contextual information
+            context_parts = [sanitized_content]
+            sanitized_user_name = sanitize_mentions(user_name, combined_mentions)
+            context_parts.append(f"@{sanitized_user_name}")
+            if not is_dm:
+                channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
+                sanitized_channel_name = sanitize_mentions(channel_name, combined_mentions)
+                context_parts.append(f"#{sanitized_channel_name}")
+            search_query = " ".join(context_parts)
 
             # Get initial candidate memories using the async method
             candidate_memories = await memory_index.search_async(
@@ -239,8 +241,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     
                     # Calculate and log threshold - high amygdala = lower threshold (more permissive)
                     amygdala_scale = bot.amygdala_response / 100.0  # 0-1 scale
-                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH + (0.3 * (1 - amygdala_scale)))  # Inverted influence
-                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {0.3 * (1 - amygdala_scale):.3f})")
+                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH + (MOOD_COEFF * (1 - amygdala_scale)))  # Inverted influence
+                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * (1 - amygdala_scale):.3f})")
                     
                     # Rerank memories with blended weights
                     relevant_memories = await hippocampus.rerank_memories(
@@ -337,11 +339,14 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             system_prompt_key = 'default_chat'
             system_prompt = system_prompts[system_prompt_key].replace('{amygdala_response}', str(bot.amygdala_response))
 
-            response_content = await call_api(prompt, context=context, system_prompt=system_prompt, temperature=bot.amygdala_response/100)
-            response_content = clean_response(response_content)
+            typing_task = asyncio.create_task(maintain_typing_state(message.channel))
+            try:
+                response_content = await call_api(prompt, context=context, system_prompt=system_prompt, temperature=bot.amygdala_response/100)
+                response_content = clean_response(response_content)
+            finally:
+                typing_task.cancel()
         finally:
-            # Cancel typing maintenance when done or if error occurs
-            typing_task.cancel()
+            pass
             
         if response_content:
             # Add logging to help debug DM issues
@@ -452,10 +457,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
     bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
 
-    # When processing files, we don't use the inverted-index for memories, we use the conversation history instead
-    # This is due to the token volume of adding external context, adding other memories will bloat context window and potentially overwhelm the bot
-    # This isn't so much an issue of CLOUD/SOTA API models, but more of a local model issue, as the context window is limited, and image embedding layers get weird with restricted context windows
-
     try:
         amygdala_response = str(bot.amygdala_response if bot else DEFAULT_AMYGDALA_RESPONSE)
         bot.logger.info(f"Using amygdala arousal: {amygdala_response}")
@@ -491,7 +492,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         context += "</conversation>\n"
 
         # Main processing block
-        typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         try:
             # Loop through attachments, handle size check and potential resizing here
             for attachment in message.attachments:
@@ -684,14 +684,18 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
 
             bot.logger.info(f"Using prompt type: {'combined' if has_images and has_text else 'image' if has_images else 'text'}")
             
-            response_content = await call_api(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                image_paths=temp_paths if temp_paths else None,
-                temperature=bot.amygdala_response/100
-            )
-            response_content = clean_response(response_content)
-            bot.logger.info(f"API call successful. Response preview: {response_content[:100]}...")
+            typing_task = asyncio.create_task(maintain_typing_state(message.channel))
+            try:
+                response_content = await call_api(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    image_paths=temp_paths if temp_paths else None,
+                    temperature=bot.amygdala_response/100
+                )
+                response_content = clean_response(response_content)
+                bot.logger.info(f"API call successful. Response preview: {response_content[:100]}...")
+            finally:
+                typing_task.cancel()
 
             if response_content:
                 formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
@@ -699,8 +703,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 bot.logger.info(f"Sent file analysis response to {user_name} (ID: {user_id})")
 
         finally:
-            # Cancel typing maintenance when done or if error occurs
-            typing_task.cancel()
+            pass
 
         if response_content:
             # Save memory and generate thought
@@ -718,9 +721,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             
             memory_index.add_memory(user_id, memory_text)
             
-            # ugly hack to ensure the typing indicator doesn't retrigger for thought generation
-            # if I seperate the thought generation into a seperate function later maybe I can ditch the timer
-            await asyncio.sleep(0.5)  
+  
             
             # Create background task for thought generation
             asyncio.create_task(generate_and_save_thought(
@@ -770,16 +771,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     bot.logger.error(f"Error removing temporary file {temp_path}: {str(e)}")
 
 async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800, bot=None):
-    """
-    Sends a long text message by treating wrapped content (code blocks, tags) as atomic units.
-    Only splits and balances wraps if a block exceeds max length.
-    
-    Args:
-        channel: Discord channel to send messages to
-        text: Text content to send
-        max_length: Maximum length per message (default 1800 to allow for padding)
-        bot: Bot instance for accessing mentions configuration and guilds
-    """
+
     if not text:
         return
         
@@ -1449,9 +1441,12 @@ def setup_bot(prompt_path=None, bot_id=None):
                 await ctx.send(f"I don't have permission to read message history in the specified channel.")
                 return
 
-            async with ctx.channel.typing():
+            typing_task = asyncio.create_task(maintain_typing_state(ctx.channel))
+            try:
                 summarizer = ChannelSummarizer(bot, prompt_formats, system_prompts, max_entries=n)
                 summary = await summarizer.summarize_channel(channel.id)
+            finally:
+                typing_task.cancel()
                 
             # Send the summary as a DM to the user
             try:
@@ -1698,8 +1693,11 @@ def setup_bot(prompt_path=None, bot_id=None):
                 return
 
             # Use typing indicator during search
-            async with ctx.typing():
+            typing_task = asyncio.create_task(maintain_typing_state(ctx.channel))
+            try:
                 relevant_files = await repo_index.search_repo_async(question)
+            finally:
+                typing_task.cancel()
                 
             if not relevant_files:
                 await ctx.send("No relevant files found in the repository for this question.")
@@ -1793,8 +1791,11 @@ def setup_bot(prompt_path=None, bot_id=None):
         user_id = str(ctx.author.id) if is_dm else None
         
         # Show typing indicator during search
-        async with ctx.typing():
+        typing_task = asyncio.create_task(maintain_typing_state(ctx.channel))
+        try:
             results = await user_memory_index.search_async(query, user_id=user_id)
+        finally:
+            typing_task.cancel()
         
         if not results:
             await ctx.send("No results found.")

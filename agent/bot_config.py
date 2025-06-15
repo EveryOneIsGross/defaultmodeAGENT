@@ -144,11 +144,12 @@ class PersonaConfig(BaseModel):
     """Persona and response configuration"""
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
-    hippocampus_bandwidth: float = Field(default=0.4)
+    hippocampus_bandwidth: float = Field(default=0.35) 
     memory_capacity: int = Field(default=24)
     use_hippocampus_reranking: bool = Field(default=True)
-    reranking_blend_factor: float = Field(default=0.8, description="Weight for blending initial search scores with reranking similarity (0-1)")
-    minimum_reranking_threshold: float = Field(default=0.1, description="Minimum threshold for reranked memories")
+    reranking_blend_factor: float = Field(default=0.75, description="Weight for blending initial search scores with reranking similarity (0-1)") 
+    minimum_reranking_threshold: float = Field(default=0.45, description="Minimum threshold for reranked memories") 
+    mood_coefficient: float = Field(default=0.75, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
 
 class NotionConfig(BaseModel):
     """Notion database configuration"""

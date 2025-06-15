@@ -430,13 +430,39 @@ class UserMemoryIndex:
         else:
             relevant_memory_ids = range(len(self.memories))
 
-        # BM25-lite parameters
+        # BM25 parameters
         k1 = 1.2  # tf saturation curve
+        b = 0.75  # length normalization parameter
+        
+        # Pre-compute document lengths only for relevant memories
+        doc_lengths = {}
+        total_length = 0
+        valid_count = 0
+        
+        for mid in relevant_memory_ids:
+            if mid < len(self.memories) and self.memories[mid] is not None:
+                # Simple word count without full text cleaning for length calculation
+                doc_len = len(self.memories[mid].split())
+                doc_lengths[mid] = doc_len
+                total_length += doc_len
+                valid_count += 1
+        
+        avgdl = total_length / valid_count if valid_count > 0 else 1.0
 
-        # Score memories with BM25-lite weighting
+        # Score memories with full BM25 weighting
+        # Convert relevant_memory_ids to set for O(1) lookup
+        relevant_set = set(relevant_memory_ids) if user_id else None
         for word in query_words:
-            posting = [mid for mid in self.inverted_index.get(word, [])
-                      if mid in relevant_memory_ids]
+            posting_list = self.inverted_index.get(word, [])
+            if not posting_list:
+                continue
+            
+            # Filter to relevant memories efficiently
+            if relevant_set:
+                posting = [mid for mid in posting_list if mid in relevant_set]
+            else:
+                posting = posting_list
+                
             if not posting:
                 continue
 
@@ -445,12 +471,15 @@ class UserMemoryIndex:
             idf = math.log((total_memories - df + 0.5) / (df + 0.5) + 1.0)
 
             for mid, tf in tf_counts.items():
-                bm25_weight = idf * ((k1 + 1) * tf) / (k1 + tf)  # BM25-lite
+                # Use pre-computed document length
+                doc_len = doc_lengths.get(mid, 1)
+                length_norm = k1 * ((1 - b) + b * (doc_len / avgdl))
+                bm25_weight = idf * ((k1 + 1) * tf) / (length_norm + tf)
                 memory_scores[mid] += bm25_weight
-
-        # Normalize scores by memory length and to 0.00-1.00 range
+        # Light normalization using pre-computed lengths
         for memory_id, score in memory_scores.items():
-            memory_scores[memory_id] = score / len(self.clean_text(self.memories[memory_id]).split())
+            doc_len = doc_lengths.get(memory_id, 1)
+            memory_scores[memory_id] = score / math.log(1 + doc_len)
         
         # Get max score for normalization
         max_score = max(memory_scores.values()) if memory_scores else 1.0

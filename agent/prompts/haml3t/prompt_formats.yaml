@@ -5,7 +5,7 @@ chat_with_memory: |
   User Message:
   {user_message}
 
-  Please provide a helpful response.
+  Repond to the users request in a style your own.
 
 generate_thought: |
   Based on this interaction with {user_name}, generate a concise thought or insight:

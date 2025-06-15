@@ -321,11 +321,10 @@ class DMNProcessor:
         num_results = len(related_memories)
 
         if self.top_k > 0:
-            # Calculate density: recalled memories / max requested memories (top_k)
-            # No cap on num_results here, unlike the original min(..., 20)
-            density = num_results / self.top_k
-            # Calculate multiplier using the original formula structure (density replaces capped_ratio/20)
-            intensity_multiplier = max(0.01, 1.0 - (density * self.density_multiplier))
+            # Calculate inverse density: fewer memories = higher multiplier
+            # Cap density at 1.0 to prevent going below 0.0
+            density = min(1.0, num_results / self.top_k)
+            intensity_multiplier = 1.0 - density
         else:
             # Default to max intensity if top_k is 0 (edge case)
             # Corresponds to density = 0 in the formula

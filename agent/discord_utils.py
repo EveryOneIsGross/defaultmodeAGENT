@@ -168,21 +168,57 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                 channels_dict[channel.name.lower()] = channel
         
         if mentions_enabled:
-            # Convert to Discord mentions, handling longer names first
-            for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
-                if f"@{member_name}" in content:
-                    content = content.replace(f"@{member_name}", f"<@{member.id}>")
+            # Process line by line with code block detection
+            lines = content.split('\n')
+            formatted_lines = []
+            in_code_block = False
             
-            # Also handle bare usernames (without @) and convert to Discord mentions
-            for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
-                if member_name in content and member_name.lower() not in [a.lower() for a in code_annotations]:
-                    #content = content.replace(member_name, f"<@{member.id}>")
-                    content = re.sub(r'\b' + re.escape(member_name) + r'\b', f"<@{member.id}>", content)
+            for line in lines:
+                if '```' in line:
+                    in_code_block = not in_code_block
+                
+                current_line = line
+                
+                # Skip conversion for inline code spans and code blocks
+                # First, temporarily replace inline code spans to protect them
+                inline_code_spans = []
+                while '`' in current_line:
+                    start_idx = current_line.find('`')
+                    if start_idx == -1:
+                        break
+                    end_idx = current_line.find('`', start_idx + 1)
+                    if end_idx == -1:
+                        break
+                    # Extract the inline code span
+                    code_span = current_line[start_idx:end_idx + 1]
+                    inline_code_spans.append(code_span)
+                    # Replace with placeholder
+                    current_line = current_line[:start_idx] + f"__INLINE_CODE_{len(inline_code_spans)-1}__" + current_line[end_idx + 1:]
+                
+                # Only convert mentions if not in code block
+                if not in_code_block:
+                    # Convert to Discord mentions, handling longer names first
+                    for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                        if f"@{member_name}" in current_line:
+                            current_line = current_line.replace(f"@{member_name}", f"<@{member.id}>")
+                    
+                    # Also handle bare usernames (without @) and convert to Discord mentions
+                    for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                        if member_name in current_line and member_name.lower() not in [a.lower() for a in code_annotations]:
+                            current_line = re.sub(r'\b' + re.escape(member_name) + r'\b', f"<@{member.id}>", current_line)
+                    
+                    # Handle channel name to channel mention conversion
+                    for channel_name, channel in sorted(channels_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                        if f"#{channel_name}" in current_line:
+                            current_line = current_line.replace(f"#{channel_name}", f"<#{channel.id}>")
+                
+                # Restore inline code spans
+                for i, code_span in enumerate(inline_code_spans):
+                    current_line = current_line.replace(f"__INLINE_CODE_{i}__", code_span)
+                
+                formatted_lines.append(current_line)
             
-            # Handle channel name to channel mention conversion
-            for channel_name, channel in sorted(channels_dict.items(), key=lambda x: len(x[0]), reverse=True):
-                if f"#{channel_name}" in content:
-                    content = content.replace(f"#{channel_name}", f"<#{channel.id}>")
+            content = '\n'.join(formatted_lines)
         else:
             # Find all potential @mentions using a more inclusive regex
             mentions = re.findall(r'@([\w.\-_]+)', content)

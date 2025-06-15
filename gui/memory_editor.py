@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
 import pickle
@@ -13,18 +14,42 @@ import math
 import re
 import string
 import random
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Memory Cache Editor")
+# Thread pool for CPU-intensive operations
+executor = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global executor
+    executor = ThreadPoolExecutor(max_workers=2)
+    logger.info("Started thread pool executor")
+    yield
+    # Shutdown
+    if executor:
+        executor.shutdown(wait=True)
+        logger.info("Shutdown thread pool executor")
+
+app = FastAPI(title="Memory Cache Editor", lifespan=lifespan)
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="gui/static"), name="static")
 
 class MemoryUpdate(BaseModel):
     text: str
+
+class FindReplaceRequest(BaseModel):
+    find_text: str
+    replace_text: str
+    case_sensitive: bool = False
+    whole_words: bool = False
+    user_id: Optional[str] = None
 
 # Global state
 CACHE_DIR = "cache"
@@ -187,6 +212,21 @@ def _rebuild_memory_index(memory_id: int, text: str):
     tokens = _tokenize(text)
     for token in tokens:
         cache['inverted_index'][token].append(memory_id)
+
+def _rebuild_entire_index():
+    """Rebuild the entire inverted index from scratch"""
+    cache['inverted_index'].clear()
+    
+    for memory_id, memory_text in enumerate(cache['memories']):
+        if memory_text is not None:
+            tokens = _tokenize(memory_text)
+            for token in tokens:
+                cache['inverted_index'][token].append(memory_id)
+    
+    # Clean up empty entries
+    empty_words = [word for word, memory_list in cache['inverted_index'].items() if not memory_list]
+    for word in empty_words:
+        del cache['inverted_index'][word]
     
 @app.put("/memory/{memory_id}")
 async def update_memory(memory_id: int, update: MemoryUpdate):
@@ -278,103 +318,16 @@ async def search_memories(query: str = "", user_id: Optional[str] = None, page: 
     """Search memories with hybrid TF-IDF and BM25-like weighting"""
     if not cache['memories']:
         raise HTTPException(status_code=400, detail="No cache data loaded")
-        
-    results = []
-    memory_ids = set(range(len(cache['memories'])))
     
-    # Filter for specific user if provided
-    if user_id:
-        memory_ids = set(cache['user_memories'].get(user_id, []))
+    # Run search in thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        executor, 
+        _perform_search_sync, 
+        query, user_id, page, per_page
+    )
     
-    # Pre-calculate document frequencies and lengths
-    total_docs = len([m for m in cache['memories'] if m is not None])
-    doc_freqs = {}
-    doc_lengths = {}
-    avg_length = 0
-    
-    # Single pass to gather statistics
-    for word, memory_list in cache['inverted_index'].items():
-        doc_freqs[word] = len(set(memory_list))
-    
-    for mid in memory_ids:
-        if mid < len(cache['memories']) and cache['memories'][mid] is not None:
-            tokens = _tokenize(cache['memories'][mid])
-            doc_lengths[mid] = len(tokens)
-            avg_length += len(tokens)
-    
-    avg_length = avg_length / len(doc_lengths) if doc_lengths else 1
-    
-    # Calculate scores for each memory
-    for mid in sorted(memory_ids):
-        if mid >= len(cache['memories']) or cache['memories'][mid] is None:
-            continue
-            
-        memory = cache['memories'][mid]
-        word_counts = defaultdict(int)
-        tokens = _tokenize(memory)
-        
-        for token in tokens:
-            word_counts[token] += 1
-            
-        # Calculate hybrid score
-        score = 0.0
-        if query:
-            query_tokens = set(_tokenize(query))
-            k1, b = 1.5, 0.75  # BM25 parameters
-            
-            for word in query_tokens:
-                if word in word_counts and word in doc_freqs:
-                    tf = word_counts[word]
-                    df = doc_freqs[word]
-                    doc_len = doc_lengths[mid]
-                    
-                    # BM25-like score component
-                    idf = math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
-                    tf_normalized = ((k1 + 1) * tf) / (k1 * (1 - b + b * doc_len / avg_length) + tf)
-                    score += idf * tf_normalized
-        
-        memory_metadata = cache['metadata']['memory_stats'].get(mid, {})
-        
-        # Get keywords for display (keep existing TF-IDF for keyword highlighting)
-        keywords = {}
-        for word, freq in word_counts.items():
-            if word in cache['inverted_index']:
-                tf = freq / len(tokens)
-                idf = math.log(total_docs / (doc_freqs[word] or 1))
-                keywords[word] = round(tf * idf, 3)
-        
-        results.append({
-            "id": mid,
-            "text": memory,
-            "user_id": next((uid for uid, mids in cache['user_memories'].items() if mid in mids), None),
-            "score": score,
-            "last_modified": memory_metadata.get('last_modified'),
-            "last_action": memory_metadata.get('action'),
-            "keywords": keywords
-        })
-    
-    # Sort by score if query provided
-    if query:
-        results.sort(key=lambda x: x["score"], reverse=True)
-    
-    # Calculate pagination
-    total_items = len(results)
-    total_pages = math.ceil(total_items / per_page)
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    
-    # Get paginated results
-    paginated_results = results[start_idx:end_idx]
-    
-    return {
-        "memories": paginated_results,
-        "pagination": {
-            "current_page": page,
-            "total_pages": total_pages,
-            "total_items": total_items,
-            "per_page": per_page
-        }
-    }
+    return result
 
 @app.get("/visualize/")
 async def visualize_network(query: str = "", user_id: Optional[str] = None, page: int = 1, per_page: int = 10):
@@ -382,187 +335,15 @@ async def visualize_network(query: str = "", user_id: Optional[str] = None, page
     if not cache['memories']:
         raise HTTPException(status_code=400, detail="No cache data loaded")
     
-    # Get memories from search results with exact pagination
-    search_response = await search_memories(query=query, user_id=user_id, page=page, per_page=per_page)
-    search_results = search_response["memories"]
+    # Run visualization generation in thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    svg_content = await loop.run_in_executor(
+        executor,
+        _generate_visualization_sync,
+        query, user_id, page, per_page
+    )
     
-    if not search_results:
-        return HTMLResponse('<div class="error">No memories to visualize</div>')
-    
-    # Build efficient keyword index
-    keyword_to_memories = defaultdict(set)
-    memory_to_keywords = {}
-    max_keywords = 1
-    
-    # O(n) single pass to build indexes
-    for result in search_results:
-        mid = result["id"]
-        keywords = result["keywords"]
-        if keywords:
-            memory_to_keywords[mid] = {
-                "keywords": keywords,
-                "score": result["score"]
-            }
-            max_keywords = max(max_keywords, len(keywords))
-            # Index keywords for fast intersection
-            for word in keywords:
-                keyword_to_memories[word].add(mid)
-    
-    if not memory_to_keywords:
-        return HTMLResponse('<div class="error">No memories with keywords to visualize</div>')
-    
-    # Calculate links using inverted index, respecting user_id filter
-    links = defaultdict(float)  # (mem1,mem2) -> weight
-    max_shared = 1
-    
-    # Get set of valid memory IDs for the current user
-    valid_memory_ids = set(memory_to_keywords.keys())
-    
-    for mid, data in memory_to_keywords.items():
-        for word in data["keywords"]:
-            # Only consider memories that are in the current results
-            sharing_memories = keyword_to_memories[word] & valid_memory_ids
-            for other_mid in sharing_memories:
-                if other_mid > mid:
-                    key = (mid, other_mid)
-                    links[key] += 1
-                    max_shared = max(max_shared, links[key])
-
-    # Force-directed layout calculation
-    iterations = 50  # Number of iterations for force-directed layout
-    k = 50  # Optimal distance between nodes
-    temperature = 0.9  # Initial temperature for simulated annealing
-    
-    # Initialize random positions
-    positions = {}
-    node_sizes = {}  # Store node sizes for overlap calculations
-    for mid in memory_to_keywords:
-        positions[mid] = {
-            'x': random.uniform(100, 700),
-            'y': random.uniform(100, 500),
-            'dx': 0,
-            'dy': 0
-        }
-        # Calculate and store node size
-        base_size = 5 + (15 * len(memory_to_keywords[mid]["keywords"]) / max_keywords)
-        score_boost = memory_to_keywords[mid]["score"] if query else 1
-        node_sizes[mid] = min(25, base_size * (1 + score_boost / 2))
-    
-    # Run force-directed layout
-    for _ in range(iterations):
-        # Calculate repulsive forces between all nodes
-        for mid1 in positions:
-            positions[mid1]['dx'] = 0
-            positions[mid1]['dy'] = 0
-            for mid2 in positions:
-                if mid1 != mid2:
-                    dx = positions[mid1]['x'] - positions[mid2]['x']
-                    dy = positions[mid1]['y'] - positions[mid2]['y']
-                    distance = max(0.1, math.sqrt(dx * dx + dy * dy))
-                    
-                    # Calculate minimum required distance based on node sizes
-                    min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 1.5
-                    
-                    # Stronger repulsion when nodes are too close
-                    if distance < min_distance:
-                        force = k * k * min_distance / (distance * distance)
-                        force *= 2.0  # Extra repulsion for overlapping nodes
-                    else:
-                        force = k * k / distance
-                    
-                    positions[mid1]['dx'] += dx / distance * force
-                    positions[mid1]['dy'] += dy / distance * force
-
-        # Calculate attractive forces for linked nodes
-        for (mid1, mid2), weight in links.items():
-            dx = positions[mid1]['x'] - positions[mid2]['x']
-            dy = positions[mid1]['y'] - positions[mid2]['y']
-            distance = max(0.1, math.sqrt(dx * dx + dy * dy))
-            
-            # Limit attraction based on minimum node distance
-            min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 1.2
-            if distance > min_distance:
-                force = (distance - min_distance) * distance / (k * weight)
-                
-                positions[mid1]['dx'] -= dx / distance * force
-                positions[mid1]['dy'] -= dy / distance * force
-                positions[mid2]['dx'] += dx / distance * force
-                positions[mid2]['dy'] += dy / distance * force
-
-        # Update positions with temperature cooling
-        for mid in positions:
-            dx = max(-5, min(5, positions[mid]['dx'])) * temperature
-            dy = max(-5, min(5, positions[mid]['dy'])) * temperature
-            
-            # Ensure nodes stay within bounds with padding based on node size
-            padding = node_sizes[mid] * 1.2
-            positions[mid]['x'] = max(padding, min(800 - padding, positions[mid]['x'] + dx))
-            positions[mid]['y'] = max(padding, min(600 - padding, positions[mid]['y'] + dy))
-        
-        temperature *= 0.9  # Cool down
-
-    # Generate SVG with improved styling
-    svg = [
-        f'<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">',
-        '<style>',
-        '.memory-link { stroke: #000000; transition: all 0.3s; }',
-        '.memory-link:hover { stroke: #000000; opacity: 0.8; }',
-        '.memory-node { fill: #ff9c9c; stroke: #000000; stroke-width: 2; transition: all 0.3s; cursor: pointer; }',
-        '.memory-node.active { fill: #ff9c9c; opacity: 0.8; }',
-        '.memory-node:hover { fill: #ff9c9c; opacity: 0.7; }',
-        '.memory-label { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 10px; fill: #000000; pointer-events: none; }',
-        '.memory-score { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 8px; fill: #000000; pointer-events: none; }',
-        '.memory-keyword { font-family: "Courier New", Courier, monospace; font-style: italic; font-size: 9px; fill: #000000; pointer-events: none; }',
-        '</style>',
-        '<rect width="100%" height="100%" fill="#ff9c9c"/>'
-    ]
-    
-    # Draw links with gradient opacity
-    for (mid1, mid2), weight in links.items():
-        opacity = 0.2 + weight / max_shared * 0.6
-        width = 1 + weight / max_shared * 3
-        svg.append(
-            f'<line class="memory-link" x1="{positions[mid1]["x"]}" y1="{positions[mid1]["y"]}" '
-            f'x2="{positions[mid2]["x"]}" y2="{positions[mid2]["y"]}" '
-            f'stroke-width="{width}" opacity="{opacity}"/>'
-        )
-    
-    # Draw nodes
-    for mid, data in memory_to_keywords.items():
-        # Node size based on normalized keyword count and search score
-        base_size = 5 + (15 * len(data["keywords"]) / max_keywords)
-        score_boost = data["score"] if query else 1
-        size = min(25, base_size * (1 + score_boost / 2))
-        
-        # Get top keyword
-        sorted_keywords = sorted(data["keywords"].items(), key=lambda x: x[1], reverse=True)
-        top_keyword = sorted_keywords[0][0] if sorted_keywords else ""
-        
-        # Node class with active state based on score
-        node_class = 'memory-node' + (' active' if data["score"] > 1 else '')
-        
-        svg.append(
-            f'<circle class="{node_class}" cx="{positions[mid]["x"]}" cy="{positions[mid]["y"]}" '
-            f'r="{size}" data-id="{mid}" onclick="highlightMemory({mid})"/>'
-        )
-        svg.append(
-            f'<text class="memory-label" x="{positions[mid]["x"]}" y="{positions[mid]["y"] + size + 10}" '
-            f'text-anchor="middle">{mid}</text>'
-        )
-        if query:
-            svg.append(
-                f'<text class="memory-score" x="{positions[mid]["x"]}" y="{positions[mid]["y"] - size - 5}" '
-                f'text-anchor="middle">{data["score"]:.2f}</text>'
-            )
-        if top_keyword:
-            svg.append(
-                f'<text class="memory-keyword" x="{positions[mid]["x"]}" y="{positions[mid]["y"]}" '
-                f'text-anchor="middle" dominant-baseline="middle">{top_keyword}</text>'
-            )
-    
-    svg.append('</svg>')
-    
-    return HTMLResponse('\n'.join(svg))
+    return HTMLResponse(svg_content)
 
 @app.get("/stats")
 async def get_stats():
@@ -604,6 +385,38 @@ async def root():
                 Save Changes
             </button>
             <div id="save-status"></div>
+                        
+            <!--  Find & Replace — compact two-row layout -->
+            <div class="find-replace-section"
+                style="margin:15px 0;padding:15px;border:2px solid #000;background:rgba(255,156,156,.1);">
+
+            <h3 style="margin:0 0 10px 0;">Find and Replace</h3>
+
+            <!-- Row 1 · options + scope ----------------------------------------->
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:15px;margin-bottom:10px;">
+                <label style="display:flex;align-items:center;gap:6px;">
+                Case sensitive
+                <input type="checkbox" id="case_sensitive" style="width:auto;margin:0;">
+                </label>
+
+                <label style="display:flex;align-items:center;gap:6px;">
+                Whole words only
+                <input type="checkbox" id="whole_words" style="width:auto;margin:0;">
+                </label>
+
+                <span id="replace-scope" style="font-weight:bold;">Scope: All Users</span>
+            </div>
+
+            <!-- Row 2 · text fields + button ----------------------------------->
+            <div style="display:flex;gap:10px;margin-bottom:10px;">
+                <input type="text" id="find_text"    placeholder="Find text…"    style="flex:1 1 0;padding:5px;">
+                <input type="text" id="replace_text" placeholder="Replace with…" style="flex:1 1 0;padding:5px;">
+                <button onclick="findAndReplace()" class="button" style="white-space:nowrap;">Find &amp; Replace</button>
+            </div>
+
+            <div id="replace-status"></div>
+            </div>
+
             
             <div style="margin-bottom: 15px;">
                 <input type="text" 
@@ -615,7 +428,7 @@ async def root():
             <!-- Controls on separate line -->
             <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
                 <select id="user_id_select" 
-                        onchange="fetchMemories()">
+                        onchange="fetchMemories(); updateReplaceScope()">
                     <option value="">All Users</option>
                 </select>
                 <button onclick="deleteUser()" 
@@ -1021,8 +834,96 @@ async def root():
                             select.innerHTML = '<option value="">All Users</option>';
                             deleteButton.style.display = 'none';
                         }
+                        updateReplaceScope(); // Update replace scope when user list changes
                     })
                     .catch(error => console.error('Error fetching user IDs:', error));
+                }
+
+                function updateReplaceScope() {
+                    const userId = document.getElementById('user_id_select').value;
+                    const scopeSpan = document.getElementById('replace-scope');
+                    if (userId) {
+                        scopeSpan.textContent = `Scope: User ${userId}`;
+                    } else {
+                        scopeSpan.textContent = 'Scope: All Users';
+                    }
+                }
+
+                function findAndReplace() {
+                    const findText = document.getElementById('find_text').value.trim();
+                    const replaceText = document.getElementById('replace_text').value;
+                    const caseSensitive = document.getElementById('case_sensitive').checked;
+                    const wholeWords = document.getElementById('whole_words').checked;
+                    const userId = document.getElementById('user_id_select').value;
+                    
+                    if (!findText) {
+                        alert('Please enter text to find');
+                        return;
+                    }
+                    
+                    if (!confirm(`Are you sure you want to replace "${findText}" with "${replaceText}" across ${userId ? `user ${userId}'s` : 'all'} memories? This action cannot be undone.`)) {
+                        return;
+                    }
+                    
+                    const requestData = {
+                        find_text: findText,
+                        replace_text: replaceText,
+                        case_sensitive: caseSensitive,
+                        whole_words: wholeWords
+                    };
+                    
+                    if (userId) {
+                        requestData.user_id = userId;
+                    }
+                    
+                    fetch('/find-replace', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(requestData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        const statusDiv = document.getElementById('replace-status');
+                        statusDiv.innerHTML = `
+                            <div class="success" style="margin-top: 10px;">
+                                ${data.message}<br>
+                                Changes made: ${data.changes_made}<br>
+                                Memories processed: ${data.memories_processed}<br>
+                                Scope: ${data.user_scope}
+                            </div>`;
+                        
+                        // Update stats display
+                        if (data.stats) {
+                            document.getElementById('stats').innerHTML = `
+                                <div class="success">
+                                    Cache updated after find/replace<br>
+                                    Memories: ${data.stats.memories}<br>
+                                    Users: ${data.stats.users}<br>
+                                    Index Terms: ${data.stats.index_terms}
+                                </div>`;
+                        }
+                        
+                        // Refresh the current view
+                        fetchMemories();
+                        updateVisualization();
+                        
+                        // Clear status after 5 seconds
+                        setTimeout(() => {
+                            statusDiv.innerHTML = '';
+                        }, 5000);
+                        
+                        // Mark as modified for save prompt
+                        isModified = true;
+                    })
+                    .catch(error => {
+                        const statusDiv = document.getElementById('replace-status');
+                        statusDiv.innerHTML = `
+                            <div class="error" style="margin-top: 10px;">
+                                Error: ${error.message || error}
+                            </div>`;
+                    });
                 }
 
                 function deleteUser() {
@@ -1102,6 +1003,289 @@ def _get_memory_keywords(memory_id: int) -> Dict[str, float]:
             keywords[word] = round(tfidf, 3)
             
     return keywords
+
+def _perform_search_sync(query: str, user_id: Optional[str], page: int, per_page: int):
+    """Synchronous search function to run in thread pool"""
+    results = []
+    memory_ids = set(range(len(cache['memories'])))
+    
+    # Filter for specific user if provided
+    if user_id:
+        memory_ids = set(cache['user_memories'].get(user_id, []))
+    
+    # Pre-calculate document frequencies and lengths
+    total_docs = len([m for m in cache['memories'] if m is not None])
+    doc_freqs = {}
+    doc_lengths = {}
+    avg_length = 0
+    
+    # Single pass to gather statistics
+    for word, memory_list in cache['inverted_index'].items():
+        doc_freqs[word] = len(set(memory_list))
+    
+    for mid in memory_ids:
+        if mid < len(cache['memories']) and cache['memories'][mid] is not None:
+            tokens = _tokenize(cache['memories'][mid])
+            doc_lengths[mid] = len(tokens)
+            avg_length += len(tokens)
+    
+    avg_length = avg_length / len(doc_lengths) if doc_lengths else 1
+    
+    # Calculate scores for each memory
+    for mid in sorted(memory_ids):
+        if mid >= len(cache['memories']) or cache['memories'][mid] is None:
+            continue
+            
+        memory = cache['memories'][mid]
+        word_counts = defaultdict(int)
+        tokens = _tokenize(memory)
+        
+        for token in tokens:
+            word_counts[token] += 1
+            
+        # Calculate hybrid score
+        score = 0.0
+        if query:
+            query_tokens = set(_tokenize(query))
+            k1, b = 1.5, 0.75  # BM25 parameters
+            
+            for word in query_tokens:
+                if word in word_counts and word in doc_freqs:
+                    tf = word_counts[word]
+                    df = doc_freqs[word]
+                    doc_len = doc_lengths[mid]
+                    
+                    # BM25-like score component
+                    idf = math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
+                    tf_normalized = ((k1 + 1) * tf) / (k1 * (1 - b + b * doc_len / avg_length) + tf)
+                    score += idf * tf_normalized
+        
+        memory_metadata = cache['metadata']['memory_stats'].get(mid, {})
+        
+        # Get keywords for display (keep existing TF-IDF for keyword highlighting)
+        keywords = {}
+        for word, freq in word_counts.items():
+            if word in cache['inverted_index']:
+                tf = freq / len(tokens)
+                idf = math.log(total_docs / (doc_freqs[word] or 1))
+                keywords[word] = round(tf * idf, 3)
+        
+        results.append({
+            "id": mid,
+            "text": memory,
+            "user_id": next((uid for uid, mids in cache['user_memories'].items() if mid in mids), None),
+            "score": score,
+            "last_modified": memory_metadata.get('last_modified'),
+            "last_action": memory_metadata.get('action'),
+            "keywords": keywords
+        })
+    
+    # Sort by score if query provided
+    if query:
+        results.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Calculate pagination
+    total_items = len(results)
+    total_pages = math.ceil(total_items / per_page)
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    
+    # Get paginated results
+    paginated_results = results[start_idx:end_idx]
+    
+    return {
+        "memories": paginated_results,
+        "pagination": {
+            "current_page": page,
+            "total_pages": total_pages,
+            "total_items": total_items,
+            "per_page": per_page
+        }
+    }
+
+def _generate_visualization_sync(query: str, user_id: Optional[str], page: int, per_page: int):
+    """Synchronous visualization generation to run in thread pool"""
+    # Get memories from search results with exact pagination
+    search_data = _perform_search_sync(query, user_id, page, per_page)
+    search_results = search_data["memories"]
+    
+    if not search_results:
+        return '<div class="error">No memories to visualize</div>'
+    
+    # Build efficient keyword index
+    keyword_to_memories = defaultdict(set)
+    memory_to_keywords = {}
+    max_keywords = 1
+    
+    # O(n) single pass to build indexes
+    for result in search_results:
+        mid = result["id"]
+        keywords = result["keywords"]
+        if keywords:
+            memory_to_keywords[mid] = {
+                "keywords": keywords,
+                "score": result["score"]
+            }
+            max_keywords = max(max_keywords, len(keywords))
+            # Index keywords for fast intersection
+            for word in keywords:
+                keyword_to_memories[word].add(mid)
+    
+    if not memory_to_keywords:
+        return '<div class="error">No memories with keywords to visualize</div>'
+    
+    # Calculate links using inverted index, respecting user_id filter
+    links = defaultdict(float)  # (mem1,mem2) -> weight
+    max_shared = 1
+    
+    # Get set of valid memory IDs for the current user
+    valid_memory_ids = set(memory_to_keywords.keys())
+    
+    for mid, data in memory_to_keywords.items():
+        for word in data["keywords"]:
+            # Only consider memories that are in the current results
+            sharing_memories = keyword_to_memories[word] & valid_memory_ids
+            for other_mid in sharing_memories:
+                if other_mid > mid:
+                    key = (mid, other_mid)
+                    links[key] += 1
+                    max_shared = max(max_shared, links[key])
+
+    # Force-directed layout calculation
+    iterations = 50  # Number of iterations for force-directed layout
+    k = 50  # Optimal distance between nodes
+    temperature = 0.9  # Initial temperature for simulated annealing
+    
+    # Initialize random positions
+    positions = {}
+    node_sizes = {}  # Store node sizes for overlap calculations
+    for mid in memory_to_keywords:
+        positions[mid] = {
+            'x': random.uniform(100, 700),
+            'y': random.uniform(100, 500),
+            'dx': 0,
+            'dy': 0
+        }
+        # Calculate and store node size
+        base_size = 5 + (15 * len(memory_to_keywords[mid]["keywords"]) / max_keywords)
+        score_boost = memory_to_keywords[mid]["score"] if query else 1
+        node_sizes[mid] = min(25, base_size * (1 + score_boost / 2))
+    
+    # Run force-directed layout
+    for _ in range(iterations):
+        # Calculate repulsive forces between all nodes
+        for mid1 in positions:
+            positions[mid1]['dx'] = 0
+            positions[mid1]['dy'] = 0
+            for mid2 in positions:
+                if mid1 != mid2:
+                    dx = positions[mid1]['x'] - positions[mid2]['x']
+                    dy = positions[mid1]['y'] - positions[mid2]['y']
+                    distance = max(0.1, math.sqrt(dx * dx + dy * dy))
+                    
+                    # Calculate minimum required distance based on node sizes
+                    min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 1.5
+                    
+                    # Stronger repulsion when nodes are too close
+                    if distance < min_distance:
+                        force = k * k * min_distance / (distance * distance)
+                        force *= 2.0  # Extra repulsion for overlapping nodes
+                    else:
+                        force = k * k / distance
+                    
+                    positions[mid1]['dx'] += dx / distance * force
+                    positions[mid1]['dy'] += dy / distance * force
+
+        # Calculate attractive forces for linked nodes
+        for (mid1, mid2), weight in links.items():
+            dx = positions[mid1]['x'] - positions[mid2]['x']
+            dy = positions[mid1]['y'] - positions[mid2]['y']
+            distance = max(0.1, math.sqrt(dx * dx + dy * dy))
+            
+            # Limit attraction based on minimum node distance
+            min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 1.2
+            if distance > min_distance:
+                force = (distance - min_distance) * distance / (k * weight)
+                
+                positions[mid1]['dx'] -= dx / distance * force
+                positions[mid1]['dy'] -= dy / distance * force
+                positions[mid2]['dx'] += dx / distance * force
+                positions[mid2]['dy'] += dy / distance * force
+
+        # Update positions with temperature cooling
+        for mid in positions:
+            dx = max(-5, min(5, positions[mid]['dx'])) * temperature
+            dy = max(-5, min(5, positions[mid]['dy'])) * temperature
+            
+            # Ensure nodes stay within bounds with padding based on node size
+            padding = node_sizes[mid] * 1.2
+            positions[mid]['x'] = max(padding, min(800 - padding, positions[mid]['x'] + dx))
+            positions[mid]['y'] = max(padding, min(600 - padding, positions[mid]['y'] + dy))
+        
+        temperature *= 0.9  # Cool down
+
+    # Generate SVG with improved styling
+    svg = [
+        f'<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">',
+        '<style>',
+        '.memory-link { stroke: #000000; transition: all 0.3s; }',
+        '.memory-link:hover { stroke: #000000; opacity: 0.8; }',
+        '.memory-node { fill: #ff9c9c; stroke: #000000; stroke-width: 2; transition: all 0.3s; cursor: pointer; }',
+        '.memory-node.active { fill: #ff9c9c; opacity: 0.8; }',
+        '.memory-node:hover { fill: #ff9c9c; opacity: 0.7; }',
+        '.memory-label { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 10px; fill: #000000; pointer-events: none; }',
+        '.memory-score { font-family: "Courier New", Courier, monospace; font-weight: bold; font-size: 8px; fill: #000000; pointer-events: none; }',
+        '.memory-keyword { font-family: "Courier New", Courier, monospace; font-style: italic; font-size: 9px; fill: #000000; pointer-events: none; }',
+        '</style>',
+        '<rect width="100%" height="100%" fill="#ff9c9c"/>'
+    ]
+    
+    # Draw links with gradient opacity
+    for (mid1, mid2), weight in links.items():
+        opacity = 0.2 + weight / max_shared * 0.6
+        width = 1 + weight / max_shared * 3
+        svg.append(
+            f'<line class="memory-link" x1="{positions[mid1]["x"]}" y1="{positions[mid1]["y"]}" '
+            f'x2="{positions[mid2]["x"]}" y2="{positions[mid2]["y"]}" '
+            f'stroke-width="{width}" opacity="{opacity}"/>'
+        )
+    
+    # Draw nodes
+    for mid, data in memory_to_keywords.items():
+        # Node size based on normalized keyword count and search score
+        base_size = 5 + (15 * len(data["keywords"]) / max_keywords)
+        score_boost = data["score"] if query else 1
+        size = min(25, base_size * (1 + score_boost / 2))
+        
+        # Get top keyword
+        sorted_keywords = sorted(data["keywords"].items(), key=lambda x: x[1], reverse=True)
+        top_keyword = sorted_keywords[0][0] if sorted_keywords else ""
+        
+        # Node class with active state based on score
+        node_class = 'memory-node' + (' active' if data["score"] > 1 else '')
+        
+        svg.append(
+            f'<circle class="{node_class}" cx="{positions[mid]["x"]}" cy="{positions[mid]["y"]}" '
+            f'r="{size}" data-id="{mid}" onclick="highlightMemory({mid})"/>'
+        )
+        svg.append(
+            f'<text class="memory-label" x="{positions[mid]["x"]}" y="{positions[mid]["y"] + size + 10}" '
+            f'text-anchor="middle">{mid}</text>'
+        )
+        if query:
+            svg.append(
+                f'<text class="memory-score" x="{positions[mid]["x"]}" y="{positions[mid]["y"] - size - 5}" '
+                f'text-anchor="middle">{data["score"]:.2f}</text>'
+            )
+        if top_keyword:
+            svg.append(
+                f'<text class="memory-keyword" x="{positions[mid]["x"]}" y="{positions[mid]["y"]}" '
+                f'text-anchor="middle" dominant-baseline="middle">{top_keyword}</text>'
+            )
+    
+    svg.append('</svg>')
+    
+    return '\n'.join(svg)
 
 @app.get("/list/")
 async def list_memories(
@@ -1282,6 +1466,98 @@ async def remove_user(user_id: str):
     except Exception as e:
         logger.error(f"Error removing user {user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/find-replace")
+async def find_replace_memories(request: FindReplaceRequest):
+    """Find and replace text across memories with optional user filtering"""
+    if not cache['memories']:
+        raise HTTPException(status_code=400, detail="No cache data loaded")
+    
+    if not request.find_text:
+        raise HTTPException(status_code=400, detail="Find text cannot be empty")
+    
+    try:
+        # Determine which memories to process
+        memory_ids_to_process = set()
+        if request.user_id:
+            # Process only memories for specific user
+            memory_ids_to_process = set(cache['user_memories'].get(request.user_id, []))
+        else:
+            # Process all memories
+            memory_ids_to_process = set(range(len(cache['memories'])))
+        
+        # Filter out None memories
+        valid_memory_ids = [
+            mid for mid in memory_ids_to_process 
+            if mid < len(cache['memories']) and cache['memories'][mid] is not None
+        ]
+        
+        if not valid_memory_ids:
+            return {
+                "message": "No memories found to process",
+                "changes_made": 0,
+                "memories_processed": 0
+            }
+        
+        # Prepare regex pattern for replacement
+        find_pattern = request.find_text
+        if request.whole_words:
+            find_pattern = r'\b' + re.escape(request.find_text) + r'\b'
+        else:
+            find_pattern = re.escape(request.find_text)
+        
+        flags = 0 if request.case_sensitive else re.IGNORECASE
+        
+        # Track changes
+        changes_made = 0
+        updated_memory_ids = []
+        
+        # Process each memory
+        for memory_id in valid_memory_ids:
+            original_text = cache['memories'][memory_id]
+            
+            # Perform replacement
+            new_text = re.sub(find_pattern, request.replace_text, original_text, flags=flags)
+            
+            # Check if text actually changed
+            if new_text != original_text:
+                cache['memories'][memory_id] = new_text
+                updated_memory_ids.append(memory_id)
+                changes_made += 1
+        
+        # If changes were made, rebuild the entire index
+        if changes_made > 0:
+            _rebuild_entire_index()
+            
+            # Update metadata
+            now = datetime.now().isoformat()
+            cache['metadata']['last_modified'] = now
+            
+            # Mark all updated memories in metadata
+            for memory_id in updated_memory_ids:
+                cache['metadata']['memory_stats'][memory_id] = {
+                    'last_modified': now,
+                    'action': 'find_replace'
+                }
+        
+        # Return statistics
+        active_memories = len([m for m in cache['memories'] if m is not None])
+        return {
+            "message": f"Find and replace completed. Updated {changes_made} memories.",
+            "changes_made": changes_made,
+            "memories_processed": len(valid_memory_ids),
+            "user_scope": request.user_id or "ALL USERS",
+            "stats": {
+                "memories": active_memories,
+                "users": len(cache['user_memories']),
+                "index_terms": len(cache['inverted_index'])
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in find and replace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Find and replace failed: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
