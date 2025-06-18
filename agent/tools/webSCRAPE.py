@@ -29,15 +29,16 @@ from bs4 import BeautifulSoup
 from yt_dlp import YoutubeDL
 
 from .chronpression import chronomic_filter
+from agent.tokenizer import count_tokens, encode_text, decode_tokens
 
 # ---------------------------------------------------------------------------
-# Global limits (characters)
+# Global limits (tokens - more accurate for LLM processing)
 # ---------------------------------------------------------------------------
-MAX_TITLE_LENGTH = 200
-MAX_DESCRIPTION_LENGTH = 500
-MAX_CONTENT_LENGTH = 50000   # ≈12.5 K tokens
-MAX_TRANSCRIPT_LENGTH = 30000  # ≈7.5 K tokens
-MAX_HTML_PREVIEW = 10000
+MAX_TITLE_TOKENS = 50       # ~200 chars
+MAX_DESCRIPTION_TOKENS = 125 # ~500 chars
+MAX_CONTENT_TOKENS = 12500   # ~50k chars   
+MAX_TRANSCRIPT_TOKENS = 15000 # ~60k chars
+MAX_HTML_PREVIEW_TOKENS = 2500 # ~10k chars
 PRESERVE_RATIO = 0.4  # keep 40 % head + 40 % tail when truncating
 
 # ---------------------------------------------------------------------------
@@ -78,23 +79,61 @@ async def scrape_webpage(url: str) -> dict:
     # ---------------------------------------------------------------------
     # Helper functions
     # ---------------------------------------------------------------------
-    def truncate_middle(text: str, max_length: int, preserve_ratio: float = PRESERVE_RATIO) -> str:
-        """Keep head/tail, drop middle so total ≤ *max_length*."""
-        if not text or len(text) <= max_length:
+    def truncate_middle_tokens(text: str, max_tokens: int, preserve_ratio: float = PRESERVE_RATIO) -> str:
+        """Keep head/tail, drop middle so total ≤ *max_tokens*."""
+        if not text:
             return text
-        preserve_chars = int(max_length * preserve_ratio)
-        start = preserve_chars // 2
-        end = len(text) - preserve_chars // 2
-        # try to finish first half on sentence boundary
-        for punct in ('. ', '.\n', '! ', '!\n', '? ', '?\n', '\n\n'):
-            pos = text.find(punct, start, min(start + 500, len(text)))
-            if pos != -1:
-                start = pos + len(punct)
-                break
-        return (text[:start].rstrip() + "\n\n[…content truncated…]\n\n" + text[end:].lstrip())
+        
+        current_tokens = count_tokens(text)
+        if current_tokens <= max_tokens:
+            return text
+            
+        # Calculate how many tokens to preserve from head/tail
+        preserve_tokens = int(max_tokens * preserve_ratio)
+        head_tokens = preserve_tokens // 2
+        tail_tokens = preserve_tokens // 2
+        
+        # Encode text to tokens
+        tokens = encode_text(text)
+        
+        # Find sentence boundary near the cut point if possible
+        head_end = head_tokens
+        try:
+            # Look for sentence ending punctuation in a small window
+            search_start = max(0, head_tokens - 50)
+            search_end = min(len(tokens), head_tokens + 50)
+            
+            for i in range(search_end - 1, search_start - 1, -1):
+                token_text = decode_tokens([tokens[i]])
+                if any(punct in token_text for punct in ['. ', '.\n', '! ', '!\n', '? ', '?\n']):
+                    head_end = i + 1
+                    break
+        except:
+            pass  # fallback to original position
+        
+        # Combine head + truncation marker + tail
+        head_tokens_actual = tokens[:head_end]
+        tail_tokens_actual = tokens[-tail_tokens:] if tail_tokens > 0 else []
+        
+        head_text = decode_tokens(head_tokens_actual).rstrip()
+        tail_text = decode_tokens(tail_tokens_actual).lstrip() if tail_tokens_actual else ""
+        
+        return head_text + "\n\n[…content truncated…]\n\n" + tail_text
 
-    def truncate_field(text: str, max_length: int) -> str:
-        return text if len(text) <= max_length else text[: max_length - 3] + "…"
+    def truncate_field_tokens(text: str, max_tokens: int) -> str:
+        """Truncate text to max_tokens with ellipsis if needed."""
+        if not text:
+            return text
+            
+        current_tokens = count_tokens(text)
+        if current_tokens <= max_tokens:
+            return text
+            
+        # Encode, truncate, decode
+        tokens = encode_text(text)
+        # Reserve 1 token for ellipsis
+        truncated_tokens = tokens[:max_tokens - 1]
+        return decode_tokens(truncated_tokens) + "…"
 
     def clean(txt: str) -> str:
         txt = html.unescape(txt)
@@ -105,8 +144,8 @@ async def scrape_webpage(url: str) -> dict:
         """Return a minimal, *non‑error* Result suitable for forwarding."""
         return Result(
             url=url,
-            title=truncate_field(title or url, MAX_TITLE_LENGTH),
-            description=truncate_field(description or "", MAX_DESCRIPTION_LENGTH),
+            title=truncate_field_tokens(title or url, MAX_TITLE_TOKENS),
+            description=truncate_field_tokens(description or "", MAX_DESCRIPTION_TOKENS),
             content=content,
             content_type="html_preview" if content else "none",
             error_info={},  # never forward internal errors
@@ -180,7 +219,7 @@ async def scrape_webpage(url: str) -> dict:
 
                 # --- build markdown content -------------------------------
                 md_parts = [
-                    f"# {truncate_field(info.get('title', 'Untitled'), MAX_TITLE_LENGTH)}",
+                    f"# {truncate_field_tokens(info.get('title', 'Untitled'), MAX_TITLE_TOKENS)}",
                     "",
                     f"**Channel**: {info.get('channel') or info.get('uploader', 'Unknown')}",
                     (
@@ -192,16 +231,16 @@ async def scrape_webpage(url: str) -> dict:
                     f"**URL**: {url}",
                     "",
                     "## Description",
-                    truncate_middle(info.get("description") or "No description", 5_000),
+                    truncate_middle_tokens(info.get("description") or "No description", 1250),  # ~5k chars
                     "",
                     "## Transcript",
-                    truncate_middle(transcript, MAX_TRANSCRIPT_LENGTH),
+                    truncate_middle_tokens(transcript, MAX_TRANSCRIPT_TOKENS),
                 ]
 
                 return Result(
                     url=url,
-                    title=truncate_field(info.get("title", "Untitled"), MAX_TITLE_LENGTH),
-                    description=truncate_field(f"YouTube video by {info.get('channel', 'Unknown')}", MAX_DESCRIPTION_LENGTH),
+                    title=truncate_field_tokens(info.get("title", "Untitled"), MAX_TITLE_TOKENS),
+                    description=truncate_field_tokens(f"YouTube video by {info.get('channel', 'Unknown')}", MAX_DESCRIPTION_TOKENS),
                     content="\n".join(md_parts),
                     content_type="youtube",
                     error_info={},  # hide internals
@@ -269,7 +308,7 @@ async def scrape_webpage(url: str) -> dict:
 
         if not content:
             # fallback to raw HTML preview
-            content = truncate_middle(clean(html_text), MAX_HTML_PREVIEW)
+            content = truncate_middle_tokens(clean(html_text), MAX_HTML_PREVIEW_TOKENS)
             ctype = "html_preview"
         else:
             ctype = "text/html"
@@ -284,9 +323,9 @@ async def scrape_webpage(url: str) -> dict:
 
         return Result(
             url=url,
-            title=truncate_field(title_tag.strip(), MAX_TITLE_LENGTH),
-            description=truncate_field(description.strip(), MAX_DESCRIPTION_LENGTH),
-            content=truncate_middle(content, MAX_CONTENT_LENGTH),
+            title=truncate_field_tokens(title_tag.strip(), MAX_TITLE_TOKENS),
+            description=truncate_field_tokens(description.strip(), MAX_DESCRIPTION_TOKENS),
+            content=truncate_middle_tokens(content, MAX_CONTENT_TOKENS),
             content_type=ctype,
             error_info={},
         )
