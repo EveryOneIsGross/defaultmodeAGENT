@@ -18,6 +18,7 @@
 | `!resume` | Resume the bot | ✓ | ✗ | ✗ |
 | `!get_logs` | Get bot logs | ✓ | ✗ | ✗ |
 | `!reranking` | Disable hippocampus embedding | ✓ | ✗ | ✗ |
+| `!attention` | Enable engagement based on attention triggers | ✓ | ✗ | ✗ |
 
 ## Permission Requirements
 

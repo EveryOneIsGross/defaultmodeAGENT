@@ -34,7 +34,6 @@ from bot_config import (
     init_logging
 )
 
-# Initialize logging after all imports
 init_logging()
 
 from api_client import initialize_api_client, call_api, update_api_temperature, api
@@ -59,6 +58,7 @@ from temporality import TemporalParser
 
 # Discord Format Handling
 from discord_utils import sanitize_mentions, format_discord_mentions
+from attention import check_attention_triggers_fuzzy
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -75,6 +75,9 @@ DISCORD_BOT_MANAGER_ROLE = config.discord.bot_manager_role
 TICK_RATE = config.system.tick_rate
 MEMORY_CAPACITY = config.persona.memory_capacity
 MOOD_COEFF = config.persona.mood_coefficient
+
+# Attention system control
+attention_enabled = True
 
 # JSONL logging setup
 def log_to_jsonl(data, bot_id=None):
@@ -98,12 +101,7 @@ def log_to_jsonl(data, bot_id=None):
 
 # Amygdala arousal handling
 def update_temperature(intensity: int) -> None:
-    """Updates both bot and API client temperature based on amygdala arousal.
-    
-    Args:
-        intensity (int): Amygdala arousal value between 0-100
-    """
-    
+    """Update the bot's temperature based on intensity value."""
     TEMPERATURE = intensity / 100.0
     update_api_temperature(intensity)  # Update API client's temperature
     
@@ -406,7 +404,6 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             'channel': message.channel.name if hasattr(message.channel, 'name') else 'DM',
             'error': str(e)
         }, bot_id=bot.user.name)
-
 
 
 
@@ -1234,7 +1231,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         prompt_formats=prompt_formats,
         system_prompts=system_prompts,
         bot=bot,
-        tick_rate=TICK_RATE # defined in bot_config.py
+        tick_rate=TICK_RATE
     )
     # Sync initial amygdala arousal
     bot.dmn_processor.set_amygdala_response(bot.amygdala_response)
@@ -1249,12 +1246,11 @@ def setup_bot(prompt_path=None, bot_id=None):
 
     bot.temporal_parser = TemporalParser()
 
-    bot.mentions_enabled = True  # Default state
+    bot.mentions_enabled = False
 
     @bot.event
     async def on_ready():
         bot.logger.info(f'Logged in as {bot.user.name} (ID: {bot.user.id})')
-        # Update DMN processor logger with correct bot name
         bot.dmn_processor.logger = BotLogger(bot.user.name)
         # Start DMN processor by default
         await bot.dmn_processor.start()
@@ -1292,8 +1288,10 @@ def setup_bot(prompt_path=None, bot_id=None):
             await bot.process_commands(message)
             return
 
-        # Regular message processing for mentions or DMs
-        if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
+        # Regular message processing for mentions, DMs, or attention triggers
+        if (isinstance(message.channel, discord.DMChannel) or 
+            bot.user in message.mentions or 
+            (attention_enabled and check_attention_triggers_fuzzy(message.content, system_prompts.get('attention_triggers', [])))):
             if message.attachments:
                 try:
                     await process_files(
@@ -1319,6 +1317,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             await ctx.send(f"Current amygdala arousal is {bot.amygdala_response}%.")
             bot.logger.info(f"Amygdala arousal queried: {bot.amygdala_response}%")
         elif 0 <= intensity <= 100:
+
             # Update bot's amygdala arousal
             bot.amygdala_response = intensity
             
@@ -1333,6 +1332,30 @@ def setup_bot(prompt_path=None, bot_id=None):
         else:
             await ctx.send("Please provide a valid intensity between 0 and 100.")
             bot.logger.warning(f"Invalid amygdala arousal attempted: {intensity}")
+
+    @bot.command(name='attention')
+    @commands.check(lambda ctx: config.discord.has_command_permission('attention', ctx))
+    async def toggle_attention(ctx, state: str = None):
+        """Enable or disable attention trigger responses. Usage: !attention on/off"""
+        global attention_enabled
+        
+        if state is None:
+            status = "enabled" if attention_enabled else "disabled"
+            await ctx.send(f"Attention triggers are currently **{status}**")
+            bot.logger.info(f"Attention status queried: {status}")
+            return
+        
+        if state.lower() in ['on', 'enable', 'true', '1']:
+            attention_enabled = True
+            await ctx.send("✅ Attention triggers **enabled** - I'll respond to topic-based triggers")
+            bot.logger.info("Attention triggers enabled")
+        elif state.lower() in ['off', 'disable', 'false', '0']:
+            attention_enabled = False
+            await ctx.send("❌ Attention triggers **disabled** - I'll only respond to mentions and DMs")
+            bot.logger.info("Attention triggers disabled")
+        else:
+            await ctx.send("Usage: `!attention on` or `!attention off`")
+            bot.logger.warning(f"Invalid attention command attempted: {state}")
 
     @bot.command(name='add_memory')
     @commands.check(lambda ctx: config.discord.has_command_permission('add_memory', ctx))
@@ -1396,7 +1419,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def summarize(ctx, *, args=None):
         """Summarize the last n messages in a specified channel and send the summary to DM."""
         try:
-            n = 20  # Default value
+            n = MAX_CONVERSATION_HISTORY
             channel = None
 
             if args:
@@ -1539,7 +1562,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='repo_file_chat')
     @commands.check(lambda ctx: config.discord.has_command_permission('repo_file_chat', ctx))
     async def repo_file_chat(ctx, *, input_text: str = None):
-        """Chat about a specific file in the GitHub repository."""
+        """Specific file in the GitHub repo chat"""
         if not input_text:
             await ctx.send("Usage: !repo_file_chat <file_path> <task_description>")
             return
@@ -1677,7 +1700,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='ask_repo')
     @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
     async def ask_repo(ctx, *, question: str = None):
-        """Chat about the GitHub repository contents."""
+        """RAG GitHub repo chat"""
         if not question:
             await ctx.send("Usage: !ask_repo <question>")
             return
@@ -1913,7 +1936,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                 with open(log_path, 'r', encoding='utf-8') as source:
                     # Read all lines and reverse for newest first
                     lines = source.readlines()
-                    lines.reverse()  # Now newest entries are first
+                    lines.reverse()
                     
                     size = 0
                     recent_lines = []
@@ -1954,73 +1977,27 @@ def setup_bot(prompt_path=None, bot_id=None):
 
     @bot.command(name='reranking')
     @commands.check(lambda ctx: config.discord.has_command_permission('reranking', ctx))
-    async def toggle_reranking(ctx, setting: str = None, value: str = None):
+    async def toggle_reranking(ctx, setting: str = None):
         """
-        Control hippocampus memory reranking settings.
+        Control hippocampus memory reranking.
         
         Usage:
-        !reranking status - Show current reranking settings
-        !reranking toggle <on|off> - Enable/disable memory reranking
-        !reranking blend <value> - Set blend factor (0-1) between initial and embedding scores
-        !reranking threshold <value> - Set minimum threshold for memory filtering
+        !reranking - Show current reranking status
+        !reranking <on|off> - Enable/disable memory reranking
         """
-        if setting is None or setting.lower() == 'status':
-            status_message = (
-                f"**Hippocampus Memory Reranking Settings**\n"
-                f"- Enabled: {config.persona.use_hippocampus_reranking}\n"
-                f"- Blend factor: {config.persona.reranking_blend_factor:.2f} (initial:{config.persona.reranking_blend_factor:.2f}/embedding:{1-config.persona.reranking_blend_factor:.2f})\n"
-                f"- Minimum threshold: {config.persona.minimum_reranking_threshold:.2f}\n"
-                f"- Bandwidth: {config.persona.hippocampus_bandwidth:.2f}"
-            )
-            await ctx.send(status_message)
+        if setting is None:
+            status = "on" if config.persona.use_hippocampus_reranking else "off"
+            await ctx.send(f"**Memory Reranking:** {status}")
             return
             
-        if setting.lower() == 'toggle':
-            if value is None:
-                await ctx.send("Please specify 'on' or 'off' to toggle reranking.")
-                return
-                
-            if value.lower() in ('on', 'true', 'enable'):
-                config.persona.use_hippocampus_reranking = True
-                await ctx.send("✅ Memory reranking enabled - memories will be semantically reranked using blended scores.")
-            elif value.lower() in ('off', 'false', 'disable'):
-                config.persona.use_hippocampus_reranking = False
-                await ctx.send("❌ Memory reranking disabled - raw inverted-index search results will be used.")
-            else:
-                await ctx.send("❓ Invalid value. Use: on/off")
-                
-        elif setting.lower() == 'blend':
-            if value is None:
-                await ctx.send(f"Current blend factor is {config.persona.reranking_blend_factor:.2f}")
-                return
-                
-            try:
-                blend = float(value)
-                if 0 <= blend <= 1:
-                    config.persona.reranking_blend_factor = blend
-                    await ctx.send(f"✅ Blend factor set to {blend:.2f} (initial:{blend:.2f}/embedding:{1-blend:.2f})")
-                else:
-                    await ctx.send("❓ Blend factor must be between 0 and 1.")
-            except ValueError:
-                await ctx.send("❓ Invalid value. Please provide a number between 0 and 1.")
-                
-        elif setting.lower() == 'threshold':
-            if value is None:
-                await ctx.send(f"Current minimum threshold is {config.persona.minimum_reranking_threshold:.2f}")
-                return
-                
-            try:
-                threshold = float(value)
-                if 0 <= threshold <= 1:
-                    config.persona.minimum_reranking_threshold = threshold
-                    await ctx.send(f"✅ Minimum threshold set to {threshold:.2f}")
-                else:
-                    await ctx.send("❓ Threshold must be between 0 and 1.")
-            except ValueError:
-                await ctx.send("❓ Invalid value. Please provide a number between 0 and 1.")
-                
+        if setting.lower() in ('on', 'true', 'enable'):
+            config.persona.use_hippocampus_reranking = True
+            await ctx.send("✅ Memory reranking enabled")
+        elif setting.lower() in ('off', 'false', 'disable'):
+            config.persona.use_hippocampus_reranking = False
+            await ctx.send("❌ Memory reranking disabled")
         else:
-            await ctx.send("❓ Unknown setting. Available options: toggle, blend, threshold, status")
+            await ctx.send("❓ Invalid value. Use: on/off")
 
     return bot
 

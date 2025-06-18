@@ -13,6 +13,7 @@
 - Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
 - `Youtube` and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
 - Mentioning logic for `agent 2 agent` interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics
+- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests
 - Easily defined prompt library - For bespoke NL persona and agent-personalising-memory "style", creating emergent preferences over time
 - Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
 - Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
