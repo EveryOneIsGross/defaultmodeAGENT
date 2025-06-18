@@ -132,3 +132,13 @@ dmn_thought_generation: |
 
   kīanga whakamutunga: kia whai hua te rongoā, kia memeha te taputapu.
   Kia poto, kia ngawari, kia `Koha`.
+
+attention_triggers:
+  - "he aha te take?"
+  - "he aha te tikanga?"
+  - "he aha te rongoā?"
+  - "he aha te mea nui?"
+  - "he aha te āhua o tēnei?"
+  - "he aha te hononga?"
+  - "he aha te tikanga o tēnei ki a koe?"
+  - "he aha te mea e taea ana e koe?"
