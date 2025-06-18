@@ -47,7 +47,8 @@ class DiscordConfig(BaseModel):
         'clear_memories',
         'search_memories',
         'index_repo',
-        'reranking'
+        'reranking',
+        'attention'
     })
     
     general_commands: Set[str] = Field(default={
