@@ -27,6 +27,108 @@ class APIConfig(BaseModel):
     ollama_api_base: str = Field(default=os.getenv('OLLAMA_API_BASE', 'http://localhost:11434'))
     ollama_model: str = Field(default=os.getenv('OLLAMA_MODEL'))
 
+
+class FileConfig(BaseModel):
+    """File handling configuration"""
+    allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
+    allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
+    # add audio extension for voice message module expansion
+    allowed_audio_extensions: Set[str] = Field(default={'.mp3', '.wav', '.ogg', '.m4a'})
+
+class SearchConfig(BaseModel):
+    """Search and indexing configuration"""
+    max_tokens: int = Field(default=8000)
+    context_chunks: int = Field(default=4)
+    chunk_percentage: int = Field(default=10)
+
+class ConversationConfig(BaseModel):
+    """Conversation handling configuration"""
+    max_history: int = Field(default=24)
+    truncation_length: int = Field(default=1024)
+    harsh_truncation_length: int = Field(default=128)
+    web_content_truncation_length: int = Field(default=8000)
+
+class PersonaConfig(BaseModel):
+    """Persona and response configuration"""
+    default_amygdala_response: int = Field(default=70)
+    temperature: float = Field(default_factory=lambda: 70/100.0)
+    hippocampus_bandwidth: float = Field(default=0.70) 
+    memory_capacity: int = Field(default=16)
+    use_hippocampus_reranking: bool = Field(default=True)
+    reranking_blend_factor: float = Field(default=0.50, description="Weight for blending initial search scores with reranking similarity (0-1)") 
+    minimum_reranking_threshold: float = Field(default=0.50, description="Minimum threshold for reranked memories") 
+    mood_coefficient: float = Field(default=0.30, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
+
+class NotionConfig(BaseModel):
+    """Notion database configuration"""
+    calendar_db_id: str = Field(default=os.getenv('CALENDAR_DB_ID'))
+    projects_db_id: str = Field(default=os.getenv('PROJECTS_DB_ID'))
+    tasks_db_id: str = Field(default=os.getenv('TASKS_DB_ID'))
+    kanban_db_id: str = Field(default=os.getenv('KANBAN_DB_ID'))
+
+class TwitterConfig(BaseModel):
+    """Twitter API and limits configuration"""
+    username: str = Field(default=os.getenv('TWITTER_USERNAME'))
+    api_key: str = Field(default=os.getenv('TWITTER_API_KEY'))
+    api_secret: str = Field(default=os.getenv('TWITTER_API_SECRET'))
+    access_token: str = Field(default=os.getenv('TWITTER_ACCESS_TOKEN'))
+    access_secret: str = Field(default=os.getenv('TWITTER_ACCESS_SECRET'))
+    bearer_token: str = Field(default=os.getenv('TWITTER_BEARER_TOKEN'))
+    char_limit: int = Field(default=280)
+    media_limit: int = Field(default=4)
+    gif_limit: int = Field(default=1)
+    video_limit: int = Field(default=1)
+    reply_depth_limit: int = Field(default=25)
+    tweet_rate_limit: int = Field(default=300)
+    dm_rate_limit: int = Field(default=1000)
+
+class SystemConfig(BaseModel):
+    """System-wide configuration"""
+    poll_interval: int = Field(default=int(os.getenv('POLL_INTERVAL', 120)))
+    tick_rate: int = Field(default=800)
+
+class DMNConfig(BaseModel):
+    """DMN configuration"""
+    tick_rate: int = Field(default=300, description="Time between thought generations in seconds")
+    temperature: float = Field(default=0.7, description="Base creative temperature")
+    combination_threshold: float = Field(default=0.2, description="Minimum relevance score for memory combinations")
+    decay_rate: float = Field(default=0.1, description="Rate at which used memory weights decrease")
+    top_k: int = Field(default=24, description="Top k memories to consider for combination")
+    density_multiplier: float = Field(default=2.1, description="Multiplier for density-based temperature scaling")
+    fuzzy_overlap_threshold: int = Field(default=80, description="Minimum fuzzy overlap threshold for memory combination")
+    fuzzy_search_threshold: int = Field(default=90, description="Minimum fuzzy search threshold for term matching")
+    max_memory_length: int = Field(default=64, description="Maximum length of a memory based on truncate_middle function")
+    similarity_threshold: float = Field(default=0.5, description="Minimum similarity score for memory relevance")
+    
+    # Mode presets
+    modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
+        "forgetful": {
+            "combination_threshold": 0.02,
+            "similarity_threshold": 0.2,
+            "decay_rate": 0.8,
+            "top_k": 32,
+            "fuzzy_overlap_threshold": 70,
+            "fuzzy_search_threshold": 80
+        },
+        "homeostatic": {
+            "combination_threshold": 0.2,
+            "similarity_threshold": 0.4,
+            "decay_rate": 0.1,
+            "top_k": 24,
+            "fuzzy_overlap_threshold": 80,
+            "fuzzy_search_threshold": 90
+        },
+        "conservative": {
+            "combination_threshold": 0.9,
+            "similarity_threshold": 0.4,
+            "decay_rate": 0.05,
+            "top_k": 16,
+            "fuzzy_overlap_threshold": 90,
+            "fuzzy_search_threshold": 95
+        }
+    })
+
+
 class DiscordConfig(BaseModel):
     """Discord-specific configuration"""
     channel_id: str = Field(default=os.getenv('DISCORD_CHANNEL_ID'))
@@ -39,15 +141,16 @@ class DiscordConfig(BaseModel):
         'get_logs',
         'dmn',
         'mentions',
-        'persona'
+        'persona',
+        'search_memories'
+
     })
     
     management_commands: Set[str] = Field(default={
         'add_memory',
-        'clear_memories',
-        'search_memories',
         'index_repo',
         'reranking',
+        'clear_memories',
         'attention'
     })
     
@@ -122,64 +225,6 @@ class DiscordConfig(BaseModel):
 
         return False
 
-class FileConfig(BaseModel):
-    """File handling configuration"""
-    allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
-    allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
-    # add audio extension for voice message module expansion
-    allowed_audio_extensions: Set[str] = Field(default={'.mp3', '.wav', '.ogg', '.m4a'})
-
-class SearchConfig(BaseModel):
-    """Search and indexing configuration"""
-    max_tokens: int = Field(default=1000)
-    context_chunks: int = Field(default=4)
-    chunk_percentage: int = Field(default=10)
-
-class ConversationConfig(BaseModel):
-    """Conversation handling configuration"""
-    max_history: int = Field(default=24)
-    truncation_length: int = Field(default=1024)
-    harsh_truncation_length: int = Field(default=128)
-
-class PersonaConfig(BaseModel):
-    """Persona and response configuration"""
-    default_amygdala_response: int = Field(default=70)
-    temperature: float = Field(default_factory=lambda: 70/100.0)
-    hippocampus_bandwidth: float = Field(default=0.35) 
-    memory_capacity: int = Field(default=24)
-    use_hippocampus_reranking: bool = Field(default=True)
-    reranking_blend_factor: float = Field(default=0.75, description="Weight for blending initial search scores with reranking similarity (0-1)") 
-    minimum_reranking_threshold: float = Field(default=0.45, description="Minimum threshold for reranked memories") 
-    mood_coefficient: float = Field(default=0.75, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
-
-class NotionConfig(BaseModel):
-    """Notion database configuration"""
-    calendar_db_id: str = Field(default=os.getenv('CALENDAR_DB_ID'))
-    projects_db_id: str = Field(default=os.getenv('PROJECTS_DB_ID'))
-    tasks_db_id: str = Field(default=os.getenv('TASKS_DB_ID'))
-    kanban_db_id: str = Field(default=os.getenv('KANBAN_DB_ID'))
-
-class TwitterConfig(BaseModel):
-    """Twitter API and limits configuration"""
-    username: str = Field(default=os.getenv('TWITTER_USERNAME'))
-    api_key: str = Field(default=os.getenv('TWITTER_API_KEY'))
-    api_secret: str = Field(default=os.getenv('TWITTER_API_SECRET'))
-    access_token: str = Field(default=os.getenv('TWITTER_ACCESS_TOKEN'))
-    access_secret: str = Field(default=os.getenv('TWITTER_ACCESS_SECRET'))
-    bearer_token: str = Field(default=os.getenv('TWITTER_BEARER_TOKEN'))
-    char_limit: int = Field(default=280)
-    media_limit: int = Field(default=4)
-    gif_limit: int = Field(default=1)
-    video_limit: int = Field(default=1)
-    reply_depth_limit: int = Field(default=25)
-    tweet_rate_limit: int = Field(default=300)
-    dm_rate_limit: int = Field(default=1000)
-
-class SystemConfig(BaseModel):
-    """System-wide configuration"""
-    poll_interval: int = Field(default=int(os.getenv('POLL_INTERVAL', 120)))
-    tick_rate: int = Field(default=800)
-
 class BotConfig(BaseModel):
     """Main configuration container"""
     api: APIConfig = Field(default_factory=APIConfig)
@@ -192,6 +237,7 @@ class BotConfig(BaseModel):
     twitter: TwitterConfig = Field(default_factory=TwitterConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     logging: LogConfig = Field(default_factory=LogConfig)
+    dmn: DMNConfig = Field(default_factory=DMNConfig)
 
 # Create global config instance
 config = BotConfig()

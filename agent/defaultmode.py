@@ -3,20 +3,21 @@ import random
 from collections import defaultdict
 import logging
 from datetime import datetime
-from api_client import call_api, update_api_temperature
+from api_client import call_api, update_api_temperature, update_api_top_p
 import json
 import re
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
 from logger import BotLogger
+from bot_config import DMNConfig
 
 class DMNProcessor:
     """
     Default Mode Network (DMN) processor that implements background thought generation
     through random memory walks and associative combination.
     """
-    def __init__(self, memory_index, prompt_formats, system_prompts, bot, tick_rate=300, mode="conservative"):
+    def __init__(self, memory_index, prompt_formats, system_prompts, bot, dmn_config=None, mode="conservative"):
         # Core components
         self.memory_index = memory_index
         self.prompt_formats = prompt_formats
@@ -26,59 +27,43 @@ class DMNProcessor:
         # Use bot's logger
         self.logger = bot.logger if hasattr(bot, 'logger') else logging.getLogger('bot.default')
 
+        # Load DMN configuration
+        if dmn_config is None:
+            from bot_config import config
+            dmn_config = config.dmn
+        
         # Operational settings
-        self.tick_rate = tick_rate  # Time between thought generations
+        self.tick_rate = dmn_config.tick_rate
         self.enabled = False
         self.task = None
         
         # Thought generation parameters
-        self.temperature = 0.7  # Base creative temperature
+        self.temperature = dmn_config.temperature
         self.amygdala_response = 50  # Default intensity
-        self.combination_threshold = 0.2  # Minimum relevance score for memory combinations
+        self.combination_threshold = dmn_config.combination_threshold
         
         # Memory decay settings
-        self.decay_rate = 0.1  # Rate at which used memory weights decrease, this stays in memory but isn't persisted between sessions
+        self.decay_rate = dmn_config.decay_rate
         self.memory_weights = defaultdict(lambda: defaultdict(lambda: 1.0))  # user_id -> memory -> weight
-        self.top_k = 24  # Top k memories to consider for combination
+        self.top_k = dmn_config.top_k
 
         # Retrived Memory Density Temperature Multiplier settings
-        self.density_multiplier = 2.1  # Multiplier for density-based temperature scaling
+        self.density_multiplier = dmn_config.density_multiplier
 
         # Fuzzy matching settings
-        # These need adding to the configs presets
-        self.fuzzy_overlap_threshold = 80 # Minimum fuzzy overlap threshold for memory combination
-        self.fuzzy_search_threshold = 90  # Minimum fuzzy search threshold for term matching
+        self.fuzzy_overlap_threshold = dmn_config.fuzzy_overlap_threshold
+        self.fuzzy_search_threshold = dmn_config.fuzzy_search_threshold
         
         # Memory context compression settings
-        self.max_memory_length = 64  # Maximum length of a memory based on the truncate_middle function
+        self.max_memory_length = dmn_config.max_memory_length
         
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
+
+        # Search similarity settings
+        self.similarity_threshold = dmn_config.similarity_threshold
         
-        # Mode presets
-        # These need adding to the individual bot initialisation
-        self.modes = {
-            "forgetful": {
-                "combination_threshold": 0.02,  # Lower threshold = more memories combined
-                "decay_rate": 0.8,            # High decay = aggressive forgetting
-                "top_k": 12,                  # More memories considered
-                "fuzzy_overlap_threshold": 70, # Lower threshold for more fuzzy matches
-                "fuzzy_search_threshold": 80   # Lower threshold for more fuzzy searches
-            },
-            "homeostatic": {
-                "combination_threshold": 0.2,  # Balanced threshold
-                "decay_rate": 0.1,            # Moderate decay
-                "top_k": 16,                  # Default memory window
-                "fuzzy_overlap_threshold": 80, # Default fuzzy overlap threshold
-                "fuzzy_search_threshold": 90   # Default fuzzy search threshold
-            },
-            "conservative": {
-                "combination_threshold": 0.3,  # Higher threshold = fewer combinations
-                "decay_rate": 0.05,           # Very slow decay
-                "top_k": 8,                   # Fewer memories considered
-                "fuzzy_overlap_threshold": 90, # Higher threshold for stricter matches
-                "fuzzy_search_threshold": 95   # Higher threshold for stricter searches
-            }
-        }
+        # Store modes from config
+        self.modes = dmn_config.modes
         
         # Set initial mode
         self.set_mode(mode)
@@ -183,10 +168,10 @@ class DMNProcessor:
             except Exception as e:
                 continue
             
-            # Filter out the seed memory from results
+            # Filter out the seed memory from results and apply weight threshold
             related_memories = [
                 (memory, score) for memory, score in related_memories 
-                if memory != seed_memory
+                if memory != seed_memory and score >= self.similarity_threshold
             ]
             
             # If we found any related memories, we can proceed
@@ -341,7 +326,13 @@ class DMNProcessor:
         # Update global API temperature through bot's update_temperature function
         update_api_temperature(new_intensity)
         
+        # Update top_p with inverse scaling using same intensity value
+        # High temp (sparse) -> high top_p (diverse), Low temp (dense) -> low top_p (focused)
+        top_p_value = new_intensity / 100.0
+        update_api_top_p(top_p_value)
+        
         self.logger.info(f"Updated global amygdala arousal to {new_intensity} based on memory density")
+        self.logger.info(f"Updated global top_p to {top_p_value:.2f} (inverse density scaling)")
 
         system_prompt = self.system_prompts['dmn_thought_generation'].replace(
             '{amygdala_response}',
@@ -522,6 +513,9 @@ class DMNProcessor:
         if mode in self.modes:
             params = self.modes[mode]
             self.combination_threshold = params["combination_threshold"]
+            self.similarity_threshold = params["similarity_threshold"]
             self.decay_rate = params["decay_rate"]
             self.top_k = params["top_k"]
+            self.fuzzy_overlap_threshold = params["fuzzy_overlap_threshold"]
+            self.fuzzy_search_threshold = params["fuzzy_search_threshold"]
         
