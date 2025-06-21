@@ -29,6 +29,10 @@ def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], th
     content_lower = content.lower().strip()
     words = content_lower.split()
     
+    # Number of words needed before checking triggers
+    if len(words) < 8:
+        return False
+    
     for trigger in persona_triggers:
         if not trigger:  # Skip empty triggers
             continue
@@ -49,8 +53,35 @@ def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], th
         
         # Fuzzy match against phrases for multi-word triggers
         else:
-            if fuzz.partial_ratio(content_lower, trigger_lower) >= threshold:
-                logger.debug(f"Fuzzy phrase attention trigger matched: '{trigger}' (score: {fuzz.partial_ratio(content_lower, trigger_lower)})")
+            # Check full phrase in both directions
+            score1 = fuzz.partial_ratio(content_lower, trigger_lower)
+            score2 = fuzz.partial_ratio(trigger_lower, content_lower)
+            max_phrase_score = max(score1, score2)
+            
+            if max_phrase_score >= threshold:
+                logger.debug(f"Fuzzy phrase attention trigger matched: '{trigger}' (score: {max_phrase_score})")
                 return True
+            
+            # Check individual words from trigger against content with scoring
+            trigger_words = [word for word in trigger_lower.split() if len(word) >= 3]
+            if trigger_words:
+                word_scores = []
+                matched_words = []
+                
+                for trigger_word in trigger_words:
+                    word_score = fuzz.partial_ratio(content_lower, trigger_word)
+                    if word_score >= threshold:
+                        word_scores.append(word_score)
+                        matched_words.append(trigger_word)
+                
+                if word_scores:
+                    # Calculate composite score: average score * word coverage bonus
+                    avg_score = sum(word_scores) / len(word_scores)
+                    coverage_bonus = len(matched_words) / len(trigger_words)  # 0.0 to 1.0
+                    composite_score = avg_score * (0.7 + 0.3 * coverage_bonus)  # Boost for more words
+                    
+                    logger.debug(f"Fuzzy word set from phrase attention trigger matched: {matched_words} from '{trigger}' "
+                               f"(avg_score: {avg_score:.1f}, coverage: {coverage_bonus:.1f}, composite: {composite_score:.1f})")
+                    return True
     
     return False
