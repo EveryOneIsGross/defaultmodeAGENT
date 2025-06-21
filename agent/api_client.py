@@ -9,15 +9,20 @@ import json
 from dotenv import load_dotenv
 from colorama import Fore, Back, Style, init
 from datetime import datetime
+
 import openai
 import anthropic
+from google import genai
+from google.genai import types
+
 import base64
 from io import BytesIO
 from PIL import Image
+
 import mimetypes
-from google import genai
-from google.genai import types
 import asyncio
+
+from tokenizer import count_tokens
 
 # Initialize colorama
 init(autoreset=True)
@@ -36,6 +41,7 @@ class APIState:
         self.deployment_name = None
         self.model_name = None
         self.temperature = 0.7  # Default temperature
+        self.top_p = 0.9  # Default top_p
 
 # Create global instance
 api = APIState()
@@ -170,14 +176,56 @@ def update_api_temperature(intensity: int) -> None:
     api.temperature = intensity / 100.0
     logging.info(f"API temperature updated to {api.temperature}")
 
-async def call_api(prompt, context="", system_prompt="", conversation_id=None, temperature=None, image_paths=None):
+def update_api_top_p(top_p: float) -> None:
+    """Update the API top_p value.
+    
+    Args:
+        top_p (float): Top-p value between 0.0-1.0
+    """
+    api.top_p = top_p
+    logging.info(f"API top_p updated to {api.top_p}")
+
+async def retry_api_call(api_func, *args, max_retries=3, retry_delay=1, **kwargs):
+    """Generic retry wrapper for API calls that handles 500 errors.
+    
+    Args:
+        api_func: The API function to call
+        *args: Positional arguments for the API function
+        max_retries: Maximum number of retry attempts (default: 3)
+        retry_delay: Delay between retries in seconds (default: 1)
+        **kwargs: Keyword arguments for the API function
+    """
+    for attempt in range(max_retries):
+        try:
+            return await api_func(*args, **kwargs)
+            
+        except Exception as e:
+            # Check if it's a 500 error (either APIError with status_code or error message containing 500)
+            is_500_error = (
+                (hasattr(e, 'status_code') and e.status_code == 500) or
+                ('500' in str(e)) or
+                ('Internal Server Error' in str(e)) or
+                ('model runner has unexpectedly stopped' in str(e))
+            )
+            
+            if is_500_error and attempt < max_retries - 1:
+                logging.warning(f"API returned 500 error, attempt {attempt + 1}/{max_retries}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                continue
+            else:
+                # Re-raise the original exception
+                raise
+
+async def call_api(prompt, context="", system_prompt="", conversation_id=None, temperature=None, top_p=None, image_paths=None):
     """
     Args:
         temperature (float, optional): Override for global temperature. 
             If None, uses global temperature value.
+        top_p (float, optional): Override for global top_p value.
     """
     # Use provided temperature or fall back to global
     current_temp = temperature if temperature is not None else api.temperature
+    current_top_p = top_p if top_p is not None else api.top_p
     
     is_image = bool(image_paths)
     
@@ -191,20 +239,31 @@ async def call_api(prompt, context="", system_prompt="", conversation_id=None, t
         else:
             formatted_content = prompt
 
-        if api.api_type == 'ollama':
-            response = await call_ollama_api(formatted_content, context, system_prompt, current_temp, is_image)
-        elif api.api_type == 'openai':
-            response = await call_openai_api(formatted_content, context, system_prompt, current_temp, is_image)
-        elif api.api_type == 'anthropic':
-            response = await call_anthropic_api(formatted_content, context, system_prompt, current_temp, is_image)
-        elif api.api_type == 'vllm':
-            response = await call_vllm_api(formatted_content, context, system_prompt, current_temp)
-        elif api.api_type == 'gemini':
-            response = await call_gemini_api(formatted_content, context, system_prompt, current_temp, is_image)
-        else:
-            raise ValueError(f"Unsupported API type: {api.api_type}")
+        # Use retry wrapper for all API calls
+        async def make_api_call():
+            if api.api_type == 'ollama':
+                return await call_ollama_api(formatted_content, context, system_prompt, current_temp, current_top_p, is_image)
+            elif api.api_type == 'openai':
+                return await call_openai_api(formatted_content, context, system_prompt, current_temp, current_top_p, is_image)
+            elif api.api_type == 'anthropic':
+                return await call_anthropic_api(formatted_content, context, system_prompt, current_temp, current_top_p, is_image)
+            elif api.api_type == 'vllm':
+                return await call_vllm_api(formatted_content, context, system_prompt, current_temp, current_top_p)
+            elif api.api_type == 'gemini':
+                return await call_gemini_api(formatted_content, context, system_prompt, current_temp, current_top_p, is_image)
+            else:
+                raise ValueError(f"Unsupported API type: {api.api_type}")
+        
+        response = await retry_api_call(make_api_call)
 
         print(f"{Fore.GREEN}Output: {response}")
+
+        # Calculate token counts for input and output
+        input_text = f"{system_prompt}\n{context}\n{prompt}" if system_prompt or context else prompt
+        input_tokens = count_tokens(input_text) if not is_image else 0  # Skip token count for images
+        output_tokens = count_tokens(response)
+        
+        logging.info(f"Token Usage - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
 
         log_data = {
             "timestamp": datetime.now().isoformat(),
@@ -215,7 +274,10 @@ async def call_api(prompt, context="", system_prompt="", conversation_id=None, t
             "user_input": f"[Image] {prompt}" if is_image else prompt,
             "ai_output": response,
             "is_image": is_image,
-            "num_images": len(image_paths) if image_paths else 0
+            "num_images": len(image_paths) if image_paths else 0,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
         }
         log_to_jsonl(log_data)
 
@@ -224,7 +286,7 @@ async def call_api(prompt, context="", system_prompt="", conversation_id=None, t
         logging.error(f"Error in API call: {str(e)}")
         raise
 
-async def call_vllm_api(content, context, system_prompt, temperature):
+async def call_vllm_api(content, context, system_prompt, temperature, top_p):
     logging.info(f"Calling vLLM API - Model: {api.model_name}, Temperature: {temperature:.2f}")
     async with aiohttp.ClientSession() as session:
         # Combine prompts if present
@@ -265,7 +327,7 @@ async def call_vllm_api(content, context, system_prompt, temperature):
             logging.error(error_message)
             raise Exception(error_message)
 
-async def call_ollama_api(content, context, system_prompt, temperature, is_image):
+async def call_ollama_api(content, context, system_prompt, temperature, top_p, is_image, max_retries=3, retry_delay=1):
     logging.info(f"Calling Ollama API - Model: {api.model_name}, Temperature: {temperature:.2f}")
     client = openai.AsyncOpenAI(
         base_url=f"{api.api_base}/v1",
@@ -291,7 +353,7 @@ async def call_ollama_api(content, context, system_prompt, temperature, is_image
         logging.error(f"Ollama API error: {str(e)}")
         raise Exception(f"Ollama API call failed: {str(e)}")
 
-async def call_openai_api(content, context, system_prompt, temperature, is_image):
+async def call_openai_api(content, context, system_prompt, temperature, top_p, is_image):
     logging.info(f"Calling OpenAI API - Model: {api.model_name}, Temperature: {temperature:.2f}")
     client = openai.AsyncOpenAI(api_key=api.api_key)
     
@@ -314,53 +376,96 @@ async def call_openai_api(content, context, system_prompt, temperature, is_image
         logging.error(f"OpenAI API error: {str(e)}")
         raise Exception(f"OpenAI API call failed: {str(e)}")
 
-async def call_anthropic_api(content, context, system_prompt, temperature, is_image, max_retries=3, retry_delay=1):
-    """Call Anthropic API with retry logic.
+async def call_anthropic_api(content, context, system_prompt, temperature, top_p, is_image):
+    """Call Anthropic API.
     
     Args:
         content: Message content
         context: Context string
         system_prompt: System prompt
         temperature: Temperature setting
+        top_p: Top-p setting
         is_image: Whether content includes images
-        max_retries: Maximum number of retry attempts (default: 3)
-        retry_delay: Delay between retries in seconds (default: 1)
     """
     logging.info(f"Calling Anthropic API - Model: {api.model_name}, Temperature: {temperature:.2f}")
     client = anthropic.AsyncAnthropic(api_key=api.api_key)
     
-    for attempt in range(max_retries):
-        try:
-            response = await client.messages.create(
-                model=api.model_name,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": content}
-                ],
-                max_tokens=4096,
-                temperature=temperature
-            )
-            return response.content[0].text.strip()
+    try:
+        response = await client.messages.create(
+            model=api.model_name,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": content}
+            ],
+            max_tokens=4096,
+            temperature=temperature
+        )
+        return response.content[0].text.strip()
+        
+    except Exception as e:
+        logging.error(f"Anthropic API error: {str(e)}")
+        raise Exception(f"Anthropic API call failed: {str(e)}")
+
+async def call_gemini_api(content, context, system_prompt, temperature, top_p, is_image):
+    """Call Google Gemini API with support for text and image content.
+    
+    Args:
+        content: Message content or image content
+        context: Context string
+        system_prompt: System prompt
+        temperature: Temperature setting
+        is_image: Whether content includes images
+    """
+    logging.info(f"Calling Gemini API - Model: {api.model_name}, Temperature: {temperature:.2f}")
+    
+    try:
+        # Prepare content parts - The 'content' argument is now expected to be 
+        # a list containing the prompt string and PIL.Image objects for Gemini.
+        parts = []
+        
+        # Add system prompt and context if provided (as text parts)
+        if system_prompt:
+            parts.append(system_prompt)
+        if context:
+            parts.append(context)
             
-        except anthropic.APIError as e:
-            if e.status_code == 500:  # Internal Server Error
-                if attempt < max_retries - 1:  # If not the last attempt
-                    logging.warning(f"Anthropic API returned 500 error, attempt {attempt + 1}/{max_retries}. Retrying in {retry_delay}s...")
-                    await asyncio.sleep(retry_delay)
-                    continue
+        # Add main content (text and images from the list)
+        if isinstance(content, list):
+            for item in content:
+                # Directly append text strings or PIL Image objects
+                if isinstance(item, str) or isinstance(item, Image.Image):
+                    parts.append(item)
                 else:
-                    error_message = f"Anthropic API failed after {max_retries} attempts: {str(e)}"
-                    logging.error(error_message)
-                    raise Exception(error_message)
-            else:
-                error_message = f"Anthropic API error: {str(e)}"
-                logging.error(error_message)
-                raise Exception(error_message)
-                
-        except Exception as e:
-            error_message = f"Unexpected error in Anthropic API call: {str(e)}"
-            logging.error(error_message)
-            raise Exception(error_message)
+                    # Log or handle unexpected item types in the list
+                    logging.warning(f"Unexpected item type in Gemini content list: {type(item)}")
+        elif isinstance(content, str):
+             # Handle case where only text prompt was passed (no images)
+             parts.append(content)
+        else:
+             raise ValueError("Invalid content format for Gemini API call")
+            
+        # Create content configuration
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=64,
+            max_output_tokens=65536,
+            response_mime_type="text/plain"
+        )
+        
+        # Generate content asynchronously using asyncio.to_thread
+        response = await asyncio.to_thread(
+            api.gemini_client.models.generate_content,
+            model=api.model_name,
+            contents=parts,
+            config=config
+        )
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        logging.error(f"Gemini API error: {str(e)}")
+        raise Exception(f"Gemini API call failed: {str(e)}")
 
 async def get_embeddings(text, provider=None, model=None):
     """Get embeddings from various API providers.
@@ -395,7 +500,7 @@ async def get_embeddings(text, provider=None, model=None):
             base_url=f"{api.api_base}/v1",
             api_key="ollama"  # Required but ignored
         )
-        embed_model = model or "nomic-embed-text"
+        embed_model = model or "all-minilm:latest"
         try:
             response = await client.embeddings.create(
                 model=embed_model,
@@ -437,67 +542,6 @@ async def get_embeddings(text, provider=None, model=None):
     
     else:
         raise ValueError(f"Embeddings not supported for provider: {embed_provider}")
-
-async def call_gemini_api(content, context, system_prompt, temperature, is_image):
-    """Call Google Gemini API with support for text and image content.
-    
-    Args:
-        content: Message content or image content
-        context: Context string
-        system_prompt: System prompt
-        temperature: Temperature setting
-        is_image: Whether content includes images
-    """
-    logging.info(f"Calling Gemini API - Model: {api.model_name}, Temperature: {temperature:.2f}")
-    
-    try:
-        # Prepare content parts - The 'content' argument is now expected to be 
-        # a list containing the prompt string and PIL.Image objects for Gemini.
-        parts = []
-        
-        # Add system prompt and context if provided (as text parts)
-        if system_prompt:
-            parts.append(system_prompt)
-        if context:
-            parts.append(context)
-            
-        # Add main content (text and images from the list)
-        if isinstance(content, list):
-            for item in content:
-                # Directly append text strings or PIL Image objects
-                if isinstance(item, str) or isinstance(item, Image.Image):
-                    parts.append(item)
-                else:
-                    # Log or handle unexpected item types in the list
-                    logging.warning(f"Unexpected item type in Gemini content list: {type(item)}")
-        elif isinstance(content, str):
-             # Handle case where only text prompt was passed (no images)
-             parts.append(content)
-        else:
-             raise ValueError("Invalid content format for Gemini API call")
-            
-        # Create content configuration
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            top_p=0.95,
-            top_k=64,
-            max_output_tokens=65536,
-            response_mime_type="text/plain"
-        )
-        
-        # Generate content asynchronously using asyncio.to_thread
-        response = await asyncio.to_thread(
-            api.gemini_client.models.generate_content,
-            model=api.model_name,
-            contents=parts,
-            config=config
-        )
-        
-        return response.text.strip()
-        
-    except Exception as e:
-        logging.error(f"Gemini API error: {str(e)}")
-        raise Exception(f"Gemini API call failed: {str(e)}")
 
 if __name__ == "__main__":
     import argparse
