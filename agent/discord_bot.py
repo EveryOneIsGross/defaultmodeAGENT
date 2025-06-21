@@ -66,6 +66,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 HIPPOCAMPUS_BANDWIDTH = config.persona.hippocampus_bandwidth
 MAX_CONVERSATION_HISTORY = config.conversation.max_history
 TRUNCATION_LENGTH = config.conversation.truncation_length
+WEB_CONTENT_TRUNCATION_LENGTH = config.conversation.web_content_truncation_length
 HARSH_TRUNCATION_LENGTH = config.conversation.harsh_truncation_length
 TEMPERATURE = config.persona.temperature
 DEFAULT_AMYGDALA_RESPONSE = config.persona.default_amygdala_response
@@ -239,8 +240,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     
                     # Calculate and log threshold - high amygdala = lower threshold (more permissive)
                     amygdala_scale = bot.amygdala_response / 100.0  # 0-1 scale
-                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH + (MOOD_COEFF * (1 - amygdala_scale)))  # Inverted influence
-                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * (1 - amygdala_scale):.3f})")
+                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH - (MOOD_COEFF * amygdala_scale))  # Fixed: subtract amygdala influence
+                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * amygdala_scale:.3f})")
                     
                     # Rerank memories with blended weights
                     relevant_memories = await hippocampus.rerank_memories(
@@ -324,7 +325,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 if url_contents:
                     context += "\nWeb Page Content:\n<web_content>\n"
                     for content in url_contents:
-                        context += f"{truncate_middle(content, max_tokens=TRUNCATION_LENGTH)}\n"
+                        context += f"{truncate_middle(content, max_tokens=WEB_CONTENT_TRUNCATION_LENGTH)}\n"
                     context += "</web_content>\n"
             
             prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
@@ -1230,8 +1231,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         memory_index=user_memory_index,
         prompt_formats=prompt_formats,
         system_prompts=system_prompts,
-        bot=bot,
-        tick_rate=TICK_RATE
+        bot=bot
     )
     # Sync initial amygdala arousal
     bot.dmn_processor.set_amygdala_response(bot.amygdala_response)

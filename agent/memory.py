@@ -404,14 +404,14 @@ class UserMemoryIndex:
             self.logger.info(f"Cleared and rebuilt index after removing {len(memory_ids_to_remove)} memories for user {user_id}")
             self.save_cache()
 
-    def search(self, query, k=5, user_id=None, similarity_threshold=0.85):
+    def search(self, query, k=5, user_id=None, dedup_threshold=0.95):
         """Search for relevant memories matching a query, removing duplicates.
 
         Args:
             query (str): Search query text
             k (int): Maximum number of results to return
             user_id (str, optional): If provided, only search this user's memories
-            similarity_threshold (float): Threshold for considering memories as duplicates
+            dedup_threshold (float): Threshold for considering memories as duplicates
             
         Returns:
             list: List of tuples containing (memory_text, relevance_score), where score is normalized to 0.00-1.00
@@ -509,7 +509,7 @@ class UserMemoryIndex:
             is_duplicate = False
             for seen in seen_content:
                 similarity = self._calculate_similarity(cleaned_memory, seen)
-                if similarity > similarity_threshold:
+                if similarity > dedup_threshold:
                     is_duplicate = True
                     break
             
@@ -687,14 +687,14 @@ class UserMemoryIndex:
             return True
         return False
 
-    async def search_async(self, query, k=5, user_id=None, similarity_threshold=0.85):
+    async def search_async(self, query, k=32, user_id=None, dedup_threshold=0.95):
         """Asynchronous version of search that runs in a thread pool to avoid blocking the event loop.
         
         Args:
             query (str): Search query text
             k (int): Maximum number of results to return
             user_id (str, optional): If provided, only search this user's memories
-            similarity_threshold (float): Threshold for considering memories as duplicates
+            dedup_threshold (float): Threshold for considering memories as duplicates
             
         Returns:
             list: List of tuples containing (memory_text, relevance_score), where score is normalized to 0.00-1.00
@@ -706,7 +706,7 @@ class UserMemoryIndex:
         # Run the expensive search operation in a thread pool
         results = await loop.run_in_executor(
             None,  # Use default executor
-            lambda: self.search(query, k, user_id, similarity_threshold)
+            lambda: self.search(query, k, user_id, dedup_threshold)
         )
         
         self.logger.info(f"Async search completed with {len(results)} results")
