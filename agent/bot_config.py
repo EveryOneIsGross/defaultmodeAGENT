@@ -99,6 +99,7 @@ class DMNConfig(BaseModel):
     fuzzy_search_threshold: int = Field(default=90, description="Minimum fuzzy search threshold for term matching")
     max_memory_length: int = Field(default=64, description="Maximum length of a memory based on truncate_middle function")
     similarity_threshold: float = Field(default=0.5, description="Minimum similarity score for memory relevance")
+    top_p_min_clamp: float = Field(default=0.5, description="Minimum clamp value for top_p scaling (0.0-1.0)")
     
     # Mode presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {

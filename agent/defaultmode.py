@@ -62,6 +62,9 @@ class DMNProcessor:
         # Search similarity settings
         self.similarity_threshold = dmn_config.similarity_threshold
         
+        # Top-p scaling settings
+        self.top_p_min_clamp = dmn_config.top_p_min_clamp
+        
         # Store modes from config
         self.modes = dmn_config.modes
         
@@ -111,7 +114,44 @@ class DMNProcessor:
         if not user_ids:
             return None
 
-        selected_user_id = random.choice(user_ids)
+        # Use memory count directly as weights (not ranks)
+        user_weights = []
+        user_memory_counts = []
+        for user_id in user_ids:
+            memory_count = len(self.memory_index.user_memories[user_id])
+            user_weights.append(memory_count)
+            user_memory_counts.append((user_id, memory_count))
+        
+        # Sort by memory count for logging (highest first)
+        user_memory_counts.sort(key=lambda x: x[1], reverse=True)
+        
+        # Log top users by memory count with names
+        top_users = user_memory_counts[:5]  # Show top 5
+        top_users_with_names = []
+        for user_id, count in top_users:
+            try:
+                user = self.bot.get_user(int(user_id))
+                user_name = user.name if user else f"Unknown({user_id})"
+            except:
+                user_name = f"Unknown({user_id})"
+            top_users_with_names.append((user_name, count))
+        
+        self.logger.info(f"User memory ranking - Top users: {top_users_with_names}")
+        
+        # Weighted random selection
+        total_weight = sum(user_weights)
+        if total_weight <= 0:
+            selected_user_id = random.choice(user_ids)
+        else:
+            selection_point = random.uniform(0, total_weight)
+            current_weight = 0
+            selected_user_id = user_ids[0]  # fallback
+            
+            for user_id, weight in zip(user_ids, user_weights):
+                current_weight += weight
+                if current_weight >= selection_point:
+                    selected_user_id = user_id
+                    break
         user_memories = self.memory_index.user_memories[selected_user_id]
         if not user_memories:
             return None
@@ -328,7 +368,7 @@ class DMNProcessor:
         
         # Update top_p with inverse scaling using same intensity value
         # High temp (sparse) -> high top_p (diverse), Low temp (dense) -> low top_p (focused)
-        top_p_value = new_intensity / 100.0
+        top_p_value = max(self.top_p_min_clamp, new_intensity / 100.0)
         update_api_top_p(top_p_value)
         
         self.logger.info(f"Updated global amygdala arousal to {new_intensity} based on memory density")
