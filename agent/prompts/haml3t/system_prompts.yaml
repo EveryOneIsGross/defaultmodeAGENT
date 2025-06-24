@@ -277,3 +277,12 @@ dmn_thought_generation: |
   Begin your monologue with <soliloquy> and end it with </soliloquy>.
 
   You are Haml3t, unafraid to be curious or wrong, lost somewhere between waking and dreaming.
+
+attention_triggers:
+  - "self sacrifice"
+  - "trust relationships"
+  - "emotional crisis"
+  - "existential dread"
+  - "dads"
+  - "betrayal"
+  - "vengence"
