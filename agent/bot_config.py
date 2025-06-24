@@ -17,6 +17,8 @@ class LogConfig(BaseModel):
     db_pattern: str = Field(default="bot_log_{bot_id}.db")
     log_level: str = Field(default=os.getenv('LOGLEVEL', 'INFO'))
     log_format: str = Field(default='%(asctime)s - %(levelname)s - %(message)s')
+    enable_jsonl: bool = Field(default=True, description="Enable JSONL file logging")
+    enable_sql: bool = Field(default=False, description="Enable SQLite database logging")
 
 class APIConfig(BaseModel):
     """API authentication and endpoint configurations"""
@@ -99,7 +101,7 @@ class DMNConfig(BaseModel):
     fuzzy_search_threshold: int = Field(default=90, description="Minimum fuzzy search threshold for term matching")
     max_memory_length: int = Field(default=64, description="Maximum length of a memory based on truncate_middle function")
     similarity_threshold: float = Field(default=0.5, description="Minimum similarity score for memory relevance")
-    top_p_min_clamp: float = Field(default=0.5, description="Minimum clamp value for top_p scaling (0.0-1.0)")
+    top_p_min_clamp: float = Field(default=0.8, description="Minimum clamp value for top_p scaling (0.0-1.0)")
     
     # Mode presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
@@ -113,14 +115,14 @@ class DMNConfig(BaseModel):
         },
         "homeostatic": {
             "combination_threshold": 0.2,
-            "similarity_threshold": 0.4,
+            "similarity_threshold": 0.3,
             "decay_rate": 0.1,
             "top_k": 24,
             "fuzzy_overlap_threshold": 80,
             "fuzzy_search_threshold": 90
         },
         "conservative": {
-            "combination_threshold": 0.9,
+            "combination_threshold": 0.8,
             "similarity_threshold": 0.4,
             "decay_rate": 0.05,
             "top_k": 16,
