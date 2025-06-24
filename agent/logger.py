@@ -261,83 +261,87 @@ class BotLogger:
         if 'timestamp' not in data:
             data['timestamp'] = datetime.now().isoformat()
 
-        with open(self.jsonl_path, 'a') as f:
-            json.dump(data, f)
-            f.write('\n')
+        # Write to JSONL if enabled
+        if self._config.logging.enable_jsonl:
+            with open(self.jsonl_path, 'a') as f:
+                json.dump(data, f)
+                f.write('\n')
 
-        event_type = data.get('event', '').lower()
-        table_name = self._get_table_name(event_type)
-        
-        # Ensure table exists with proper schema
-        self._ensure_table_exists(table_name, event_type)
-        
-        # Prepare all fields
-        all_values = {
-            'timestamp': data.get('timestamp'),
-            'user_id': data.get('user_id'),
-            'user_name': data.get('user_name'),
-            'channel': data.get('channel'),
-            'data': json.dumps(data),
-            'event_type': event_type
-        }
-        
-        # Add all other fields from data
-        for key, value in data.items():
-            if key not in all_values and key not in ['event']:
-                all_values[key] = value if not isinstance(value, (dict, list)) else json.dumps(value)
-
-        # Create or update table schema if needed
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
+        # Write to SQLite if enabled
+        if self._config.logging.enable_sql:
+            event_type = data.get('event', '').lower()
+            table_name = self._get_table_name(event_type)
             
-            # Check if table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            if not cursor.fetchone():
-                # Table doesn't exist, create it with all fields
-                columns = {k: v for k, v in self.COMMON_FIELDS.items()}
-                for field, value in all_values.items():
-                    if field not in columns:
-                        columns[field] = self._get_sql_type(value)
-                
-                columns_sql = ', '.join(f'{name} {sql_type}' for name, sql_type in columns.items())
-                create_table_sql = f'''
-                    CREATE TABLE IF NOT EXISTS {table_name} (
-                        {columns_sql}
-                    )
-                '''
-                conn.execute(create_table_sql)
-                
-                # Create indexes
-                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_timestamp ON {table_name}(timestamp)')
-                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_type ON {table_name}(event_type)')
-                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_user ON {table_name}(user_id)')
-                
-                # Update schema cache
-                self._schema_cache[table_name].update(columns.keys())
-            else:
-                # Table exists, check for new columns
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                existing_columns = {row[1] for row in cursor.fetchall()}
-                
-                # Add any missing columns
-                for field, value in all_values.items():
-                    if field not in existing_columns and field not in self.COMMON_FIELDS:
-                        sql_type = self._get_sql_type(value)
-                        try:
-                            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {field} {sql_type}")
-                            self._schema_cache[table_name].add(field)
-                        except sqlite3.OperationalError as e:
-                            if "duplicate column name" not in str(e):
-                                raise
+            # Ensure table exists with proper schema
+            self._ensure_table_exists(table_name, event_type)
+            
+            # Prepare all fields
+            all_values = {
+                'timestamp': data.get('timestamp'),
+                'user_id': data.get('user_id'),
+                'user_name': data.get('user_name'),
+                'channel': data.get('channel'),
+                'data': json.dumps(data),
+                'event_type': event_type
+            }
+            
+            # Add all other fields from data
+            for key, value in data.items():
+                if key not in all_values and key not in ['event']:
+                    all_values[key] = value if not isinstance(value, (dict, list)) else json.dumps(value)
 
-            # Insert data
-            placeholders = ', '.join(['?' for _ in all_values])
-            columns = ', '.join(all_values.keys())
-            query = f'''
-                INSERT INTO {table_name} ({columns})
-                VALUES ({placeholders})
-            '''
-            conn.execute(query, list(all_values.values()))
+            # Create or update table schema if needed
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if table exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                if not cursor.fetchone():
+                    # Table doesn't exist, create it with all fields
+                    columns = {k: v for k, v in self.COMMON_FIELDS.items()}
+                    for field, value in all_values.items():
+                        if field not in columns:
+                            columns[field] = self._get_sql_type(value)
+                    
+                    columns_sql = ', '.join(f'{name} {sql_type}' for name, sql_type in columns.items())
+                    create_table_sql = f'''
+                        CREATE TABLE IF NOT EXISTS {table_name} (
+                            {columns_sql}
+                        )
+                    '''
+                    conn.execute(create_table_sql)
+                    
+                    # Create indexes
+                    conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_timestamp ON {table_name}(timestamp)')
+                    conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_type ON {table_name}(event_type)')
+                    conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{table_name}_user ON {table_name}(user_id)')
+                    
+                    # Update schema cache
+                    self._schema_cache[table_name].update(columns.keys())
+                else:
+                    # Table exists, check for new columns
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    existing_columns = {row[1] for row in cursor.fetchall()}
+                    
+                    # Add any missing columns
+                    for field, value in all_values.items():
+                        if field not in existing_columns and field not in self.COMMON_FIELDS:
+                            sql_type = self._get_sql_type(value)
+                            try:
+                                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {field} {sql_type}")
+                                self._schema_cache[table_name].add(field)
+                            except sqlite3.OperationalError as e:
+                                if "duplicate column name" not in str(e):
+                                    raise
+
+                # Insert data
+                placeholders = ', '.join(['?' for _ in all_values])
+                columns = ', '.join(all_values.keys())
+                query = f'''
+                    INSERT INTO {table_name} ({columns})
+                    VALUES ({placeholders})
+                '''
+                conn.execute(query, list(all_values.values()))
 
     def query_events(self, 
                     table_name: str = None,
