@@ -1059,7 +1059,6 @@ class CustomHelpCommand(commands.HelpCommand):
             api_settings = [
                 f"**API Type**: {api.api_type}",
                 f"**Model**: {api.model_name}",
-                f"**Temperature**: {api.temperature:.2f}",
                 f"**Amygdala Response**: {self.context.bot.amygdala_response}%"
             ]
             embed.add_field(
@@ -1070,24 +1069,29 @@ class CustomHelpCommand(commands.HelpCommand):
 
             # Add status indicators
             embed.add_field(
-                name="📚 GitHub Integration",
-                value="✅" if getattr(self.context.bot, 'github_enabled', False) else "❌",
-                inline=True
+                name="📚 GitHub Integration " + ("✅" if getattr(self.context.bot, 'github_enabled', False) else "❌"),
+                value="",
+                inline=False
             )
             embed.add_field(
-                name="🧠 DMN Processor",
-                value="✅" if self.context.bot.dmn_processor.enabled else "❌",
-                inline=True
+                name="🧠 DMN Processor " + ("✅" if self.context.bot.dmn_processor.enabled else "❌"),
+                value="",
+                inline=False
             )
             embed.add_field(
-                name="⚡ Processing",
-                value="✅" if getattr(self.context.bot, 'processing_enabled', True) else "❌",
-                inline=True
+                name="⚡ Processing " + ("✅" if getattr(self.context.bot, 'processing_enabled', True) else "❌"),
+                value="",
+                inline=False
             )
             embed.add_field(
-                name="🔗 Mentions",
-                value="✅" if getattr(self.context.bot, 'mentions_enabled', True) else "❌",
-                inline=True
+                name="🔗 Mentions " + ("✅" if getattr(self.context.bot, 'mentions_enabled', True) else "❌"),
+                value="",
+                inline=False
+            )
+            embed.add_field(
+                name="👁️ Attention " + ("✅" if getattr(self.context.bot, 'attention_enabled', True) else "❌"),
+                value="",
+                inline=False
             )
 
         # Group commands by category - simplified approach
@@ -1241,12 +1245,13 @@ def setup_bot(prompt_path=None, bot_id=None):
         'prompt': CacheManager(f'{bot_cache_dir}/prompt_cache')
     }
 
-    # Add processing control flag
-    bot.processing_enabled = True
 
     bot.temporal_parser = TemporalParser()
 
+    # Add processing control flag
+    bot.processing_enabled = True
     bot.mentions_enabled = False
+    bot.attention_enabled = True
 
     @bot.event
     async def on_ready():
@@ -1291,7 +1296,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         # Regular message processing for mentions, DMs, or attention triggers
         if (isinstance(message.channel, discord.DMChannel) or 
             bot.user in message.mentions or 
-            (attention_enabled and check_attention_triggers_fuzzy(message.content, system_prompts.get('attention_triggers', [])))):
+            (bot.attention_enabled and check_attention_triggers_fuzzy(message.content, system_prompts.get('attention_triggers', [])))):
             if message.attachments:
                 try:
                     await process_files(
@@ -1337,20 +1342,18 @@ def setup_bot(prompt_path=None, bot_id=None):
     @commands.check(lambda ctx: config.discord.has_command_permission('attention', ctx))
     async def toggle_attention(ctx, state: str = None):
         """Enable or disable attention trigger responses. Usage: !attention on/off"""
-        global attention_enabled
-        
         if state is None:
-            status = "enabled" if attention_enabled else "disabled"
+            status = "enabled" if bot.attention_enabled else "disabled"
             await ctx.send(f"Attention triggers are currently **{status}**")
             bot.logger.info(f"Attention status queried: {status}")
             return
         
         if state.lower() in ['on', 'enable', 'true', '1']:
-            attention_enabled = True
+            bot.attention_enabled = True
             await ctx.send("✅ Attention triggers **enabled** - I'll respond to topic-based triggers")
             bot.logger.info("Attention triggers enabled")
         elif state.lower() in ['off', 'disable', 'false', '0']:
-            attention_enabled = False
+            bot.attention_enabled = False
             await ctx.send("❌ Attention triggers **disabled** - I'll only respond to mentions and DMs")
             bot.logger.info("Attention triggers disabled")
         else:
