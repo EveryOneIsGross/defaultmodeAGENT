@@ -198,7 +198,7 @@ async def scrape_webpage(url: str) -> dict:
                                     re.sub(r"<[^>]+>", "", ln.strip())
                                     for ln in vtt.split("\n")
                                     if ln.strip()
-                                    and not ln.startswith(("WEBVTT", "NOTE"))
+                                    and not ln.startswith(("WEBVTT", "NOTE", "Kind:", "Language:"))
                                     and "-->" not in ln
                                     and not ln.strip().isdigit()
                                 ]
