@@ -11,7 +11,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], threshold: int = 80) -> bool:
+def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], threshold: int = 60) -> bool:
     """
     Check if message contains any attention trigger words using fuzzy matching.
     
@@ -30,7 +30,7 @@ def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], th
     words = content_lower.split()
     
     # Number of words needed before checking triggers
-    if len(words) < 8:
+    if len(words) < 4:
         return False
     
     for trigger in persona_triggers:
@@ -44,44 +44,36 @@ def check_attention_triggers_fuzzy(content: str, persona_triggers: List[str], th
             logger.debug(f"Exact attention trigger matched: '{trigger}'")
             return True
         
-        # Fuzzy match against individual words for single-word triggers
-        if len(trigger.split()) == 1:
-            for word in words:
-                if fuzz.ratio(word, trigger_lower) >= threshold:
-                    logger.debug(f"Fuzzy word attention trigger matched: '{trigger}' -> '{word}' (score: {fuzz.ratio(word, trigger_lower)})")
-                    return True
-        
-        # Fuzzy match against phrases for multi-word triggers
-        else:
-            # Check full phrase in both directions
-            score1 = fuzz.partial_ratio(content_lower, trigger_lower)
-            score2 = fuzz.partial_ratio(trigger_lower, content_lower)
-            max_phrase_score = max(score1, score2)
+        # Check individual words from trigger against content with scoring
+        trigger_words = [word for word in trigger_lower.split() if len(word) >= 3]
+        if trigger_words:
+            word_scores = []
+            matched_words = []
             
-            if max_phrase_score >= threshold:
-                logger.debug(f"Fuzzy phrase attention trigger matched: '{trigger}' (score: {max_phrase_score})")
-                return True
+            for trigger_word in trigger_words:
+                # Find best fuzzy match between trigger word and any content word
+                word_score = max((fuzz.ratio(content_word, trigger_word) for content_word in words), default=0)
+                if word_score >= threshold:
+                    word_scores.append(word_score)
+                    matched_words.append(trigger_word)
             
-            # Check individual words from trigger against content with scoring
-            trigger_words = [word for word in trigger_lower.split() if len(word) >= 3]
-            if trigger_words:
-                word_scores = []
-                matched_words = []
+            if word_scores:
+                # Coverage ratio and average fuzzy score
+                coverage_ratio = len(matched_words) / len(trigger_words)
+                avg_fuzzy_score = sum(word_scores) / len(word_scores)
                 
-                for trigger_word in trigger_words:
-                    word_score = fuzz.partial_ratio(content_lower, trigger_word)
-                    if word_score >= threshold:
-                        word_scores.append(word_score)
-                        matched_words.append(trigger_word)
+                # Coverage requirement based on trigger length
+                min_coverage = 0.5 + (0.5 / len(trigger_words))  # Single: 100%, Two: 75%, Three: 67%, etc.
                 
-                if word_scores:
-                    # Calculate composite score: average score * word coverage bonus
-                    avg_score = sum(word_scores) / len(word_scores)
-                    coverage_bonus = len(matched_words) / len(trigger_words)  # 0.0 to 1.0
-                    composite_score = avg_score * (0.7 + 0.3 * coverage_bonus)  # Boost for more words
-                    
-                    logger.debug(f"Fuzzy word set from phrase attention trigger matched: {matched_words} from '{trigger}' "
-                               f"(avg_score: {avg_score:.1f}, coverage: {coverage_bonus:.1f}, composite: {composite_score:.1f})")
+                # Trigger if: sufficient coverage AND good fuzzy scores (threshold unchanged)
+                if coverage_ratio >= min_coverage and avg_fuzzy_score >= threshold:
+                    logger.debug(f"Attention trigger matched: {matched_words} from '{trigger}' "
+                               f"(scores: {word_scores}, coverage: {coverage_ratio:.2f} >= {min_coverage:.2f}, "
+                               f"avg_score: {avg_fuzzy_score:.1f} >= {threshold})")
                     return True
+                else:
+                    logger.debug(f"Attention trigger insufficient: {matched_words} from '{trigger}' "
+                               f"(scores: {word_scores}, coverage: {coverage_ratio:.2f} < {min_coverage:.2f} OR "
+                               f"avg_score: {avg_fuzzy_score:.1f} < {threshold})")
     
     return False
