@@ -214,6 +214,9 @@ class DMNProcessor:
                 if memory != seed_memory and score >= self.similarity_threshold
             ]
             
+            # Log similarity threshold filtering results
+            self.logger.info(f"After similarity threshold ({self.similarity_threshold}): {len(related_memories)} memories selected")
+            
             # If we found any related memories, we can proceed
             if related_memories:
                 break
