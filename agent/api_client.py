@@ -52,20 +52,20 @@ def initialize_api_client(args):
     
     if api.api_type == 'ollama':
         api.api_base = os.getenv('OLLAMA_API_BASE', 'http://localhost:11434')
-        api.model_name = args.model or os.getenv('OLLAMA_MODEL_NAME', 'llama3.2-vision')
+        api.model_name = args.model or os.getenv('OLLAMA_MODEL_NAME', 'gemma3:12b')
     elif api.api_type == 'openai':
         api.api_key = os.getenv('OPENAI_API_KEY')
-        api.model_name = args.model or os.getenv('OPENAI_MODEL_NAME', 'gpt-4.1')
+        api.model_name = args.model or os.getenv('OPENAI_MODEL_NAME', 'gpt-4.1-nano')
         openai.api_key = api.api_key
     elif api.api_type == 'anthropic':
         api.api_key = os.getenv('ANTHROPIC_API_KEY')
-        api.model_name = args.model or os.getenv('ANTHROPIC_MODEL_NAME', 'claude-3-5-sonnet-20241022')
+        api.model_name = args.model or os.getenv('ANTHROPIC_MODEL_NAME', 'claude-3-5-haiku-latest')
     elif api.api_type == 'vllm':
         api.api_base = os.getenv('VLLM_API_BASE', 'http://localhost:4000')
-        api.model_name = args.model or os.getenv('VLLM_MODEL_NAME', 'hermes-testing/Hermes-3-Pro-RC2-e4')
+        api.model_name = args.model or os.getenv('VLLM_MODEL_NAME', 'google/gemma-3-4b-it')
     elif api.api_type == 'gemini':
         api.api_key = os.getenv('GEMINI_API_KEY')
-        api.model_name = args.model or os.getenv('GEMINI_MODEL_NAME', 'gemini-2.5-pro-exp-03-25')
+        api.model_name = args.model or os.getenv('GEMINI_MODEL_NAME', 'gemini-2.5-flash')
         api.gemini_client = genai.Client(api_key=api.api_key)
     else:
         raise ValueError(f"Unsupported API type: {api.api_type}")
@@ -124,7 +124,6 @@ def prepare_image_content(prompt: str, image_paths: list, api_type: str) -> list
                 continue
         return content_parts
 
-    # --- Handling for other APIs (remains the same) --- 
     base64_images = [encode_image(path) for path in image_paths] # Encode only if not Gemini
     
     if api_type == 'anthropic':
