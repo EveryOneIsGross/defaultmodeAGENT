@@ -23,6 +23,16 @@
 
 ---
 
+## NOTES:
+
+24/16/2025
+
+With the addition of `attention_triggers` the prompts all need new consideration to help nurse the bilateral user/bot paradigm we are all familair with to be more multilateral. If an attention trigger has the agent respond to a user, engaging with another or bot with bot it will over focus on responding DIRECTLY without response context... this can be solved via some more selective prompting. 
+
+I also added `top_p` to be dynamically adjusted with the `amygdala` response... its clamped in the bot_config but is a bit wild and can cause some OS models to meltdown... token selection might be a fun variable to maintain a degree of "interesting" outputs overtime, but I might also just remove it or scale it seperately...
+
+---
+
 <table align="center">
     <tr>
         <td width="50%">
@@ -31,7 +41,7 @@
         <td width="50%" style="text-align: left; padding-left: 2rem;">
             <ul>
                 <li>Continuous memory refinement through term pruning and connection weighting</li>
-                <li>Dynamic temperature scaling based on memory density and amygdala response</li>
+                <li>Dynamic hyperparameter scaling based on memory density and amygdala response</li>
                 <li>Homeostatic regulation preventing memory bloat while preserving critical knowledge</li>
                 <li>Real-time semantic relationship discovery through fuzzy matching and temporal parsing</li>
                 <li>Self-regulating modes (forgetful, homeostatic, conservative) for adaptive behavior</li>
