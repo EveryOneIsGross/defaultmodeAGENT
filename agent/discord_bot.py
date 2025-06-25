@@ -1810,7 +1810,8 @@ def setup_bot(prompt_path=None, bot_id=None):
             )
 
     @bot.command(name='search_memories')
-    @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    #@commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
+    @commands.check(lambda ctx: config.discord.has_command_permission('search_memories', ctx))
     async def search_memories(ctx, *, query):
         """Test the memory search function."""
         is_dm = isinstance(ctx.channel, discord.DMChannel)
