@@ -18,3 +18,4 @@ tiktoken==0.8.0
 uvicorn==0.34.0
 beautifulsoup4==4.12.3
 yt-dlp==2025.5.22
+google-genai==1.21.1
