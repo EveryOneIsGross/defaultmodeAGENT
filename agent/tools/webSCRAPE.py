@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 from yt_dlp import YoutubeDL
 
 from .chronpression import chronomic_filter
-from agent.tokenizer import count_tokens, encode_text, decode_tokens
+from tokenizer import count_tokens, encode_text, decode_tokens
 
 # ---------------------------------------------------------------------------
 # Global limits (tokens - more accurate for LLM processing)
