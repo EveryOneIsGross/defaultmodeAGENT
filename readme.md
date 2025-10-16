@@ -12,16 +12,17 @@
 
 # Features and Abilities
 
-- Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
-- `Youtube` and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
-- Mentioning logic for `agent 2 agent` interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics (disabled by default)
-- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests and sparse themes from memories
-- Easily defined prompt library - For bespoke NL persona and agent-personalising-memory "style", creating emergent preferences over time
-- Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
-- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability (sql recording disabled by default)
 - Neurologically-inspired memory architecture - Default Mode Network (DMN) processor creates continuous background thought generation through associative memory walks
 - Adaptive emotional regulation - Integrated amygdala response system that modulates temperature, defined prompt behavior intensity, based on homeostatic memory density and context richness
 - Hippocampus-style memory reranking - Hybrid lexical-semantic scoring system that blends keyword search with vector embeddings for human-like memory recall
+- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests and sparse themes from memories
+- Theme mining from bot's memory index for establishing emergent preferences, and to contribute to their attention triggers (if a user says something that aligns with what's on their mind the will respond)
+- All modules are regulated by the state of the others creating a distributed homeostasis of cognition.
+- Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
+- `Youtube` and Website grokking from shared links - Using novel "skim" reading method instead of narrow chunking for holistic content understanding
+- Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
+- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
+
 
 ---
 
