@@ -21,20 +21,27 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Thread pool for CPU-intensive operations
-executor = None
+# Separate thread pools for search and visualization
+executor_search = None
+executor_viz = None
+viz_sem = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global executor
-    executor = ThreadPoolExecutor(max_workers=2)
-    logger.info("Started thread pool executor")
+    global executor_search, executor_viz, viz_sem
+    import os
+    executor_search = ThreadPoolExecutor(max_workers=4)
+    executor_viz = ThreadPoolExecutor(max_workers=os.cpu_count()//2 or 1)
+    viz_sem = asyncio.Semaphore(1)
+    logger.info("Started thread pool executors")
     yield
     # Shutdown
-    if executor:
-        executor.shutdown(wait=True)
-        logger.info("Shutdown thread pool executor")
+    if executor_search:
+        executor_search.shutdown(wait=True)
+    if executor_viz:
+        executor_viz.shutdown(wait=True)
+    logger.info("Shutdown thread pool executors")
 
 app = FastAPI(title="Memory Cache Editor", lifespan=lifespan)
 
@@ -181,6 +188,15 @@ async def save_cache():
         logger.error(f"Failed to save cache: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _paginate(total: int, page: int, per_page: int):
+    """Clamp pagination parameters to valid ranges"""
+    per_page = max(1, int(per_page))
+    total_pages = max(1, math.ceil(total / per_page))
+    page = min(max(1, int(page)), total_pages)
+    start = (page - 1) * per_page
+    end = start + per_page
+    return page, per_page, total_pages, start, end
+
 def _tokenize(text: str) -> List[str]:
     """Convert text to searchable tokens"""
     # Clean rogue LLM tokens
@@ -196,9 +212,9 @@ def _tokenize(text: str) -> List[str]:
         'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them',
         'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had',
         'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would',
-        'this', 'that', 'these', 'those'
+        'this', 'that', 'these', 'those', 'into', 'their'
     ])
-    words = [word for word in words if word not in stopwords]
+    words = [word for word in words if word not in stopwords and len(word) >= 5]
     return words
 
 def _rebuild_memory_index(memory_id: int, text: str):
@@ -322,8 +338,8 @@ async def search_memories(query: str = "", user_id: Optional[str] = None, page: 
     # Run search in thread pool to avoid blocking
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
-        executor, 
-        _perform_search_sync, 
+        executor_search,
+        _perform_search_sync,
         query, user_id, page, per_page
     )
     
@@ -337,11 +353,12 @@ async def visualize_network(query: str = "", user_id: Optional[str] = None, page
     
     # Run visualization generation in thread pool to avoid blocking
     loop = asyncio.get_event_loop()
-    svg_content = await loop.run_in_executor(
-        executor,
-        _generate_visualization_sync,
-        query, user_id, page, per_page
-    )
+    async with viz_sem:
+        svg_content = await loop.run_in_executor(
+            executor_viz,
+            _generate_visualization_sync,
+            query, user_id, page, per_page
+        )
     
     return HTMLResponse(svg_content)
 
@@ -418,17 +435,18 @@ async def root():
             </div>
 
             
-            <div style="margin-bottom: 15px;">
-                <input type="text" 
-                       id="query_input" 
-                       placeholder="Search memories..." 
-                       oninput="debounce(handleSearchInput, 800)()">
+            <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                <input type="text"
+                       id="query_input"
+                       placeholder="Search memories..."
+                       style="flex: 1;">
+                <button class="button" onclick="applySearch()">SEARCH</button>
             </div>
             
             <!-- Controls on separate line -->
             <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
-                <select id="user_id_select" 
-                        onchange="fetchMemories(); updateReplaceScope()">
+                <select id="user_id_select"
+                        onchange="currentPage = 1; fetchMemories(); updateReplaceScope()">
                     <option value="">All Users</option>
                 </select>
                 <button onclick="deleteUser()" 
@@ -444,7 +462,7 @@ async def root():
                            value="10" 
                            min="1" 
                            style="width: 80px;"
-                           onchange="fetchMemories()">
+                           onchange="currentPage = 1; fetchMemories()">
                     <button onclick="changePage(-1)" class="button">&lt;</button>
                     <span id="page_info">Page 1</span>
                     <button onclick="changePage(1)" class="button">&gt;</button>
@@ -456,6 +474,7 @@ async def root():
             <script>
                 let isModified = false;
                 let currentPage = 1;
+                let vizController, memController;
 
                 // Load available bots on startup
                 fetch('/bots')
@@ -488,6 +507,11 @@ async def root():
                     loadCache(botName);
                 }
 
+                function applySearch() {
+                    currentPage = 1;
+                    fetchMemories();
+                }
+
                 function loadCache(botName) {
                     fetch(`/load/${botName}`, {
                         method: 'POST'
@@ -503,7 +527,8 @@ async def root():
                             </div>`;
                         isModified = false;
                         updateUserIds();
-                        fetchMemories();  // Fetch and display memories after loading cache
+                        currentPage = 1;
+                        fetchMemories();
                     })
                     .catch(error => {
                         document.getElementById('stats').innerHTML = `
@@ -524,10 +549,6 @@ async def root():
                     };
                 }
 
-                function handleSearchInput() {
-                    const query = document.getElementById('query_input').value.trim();
-                    fetchMemories();
-                }
 
                 function changePage(delta) {
                     currentPage = Math.max(1, currentPage + delta);
@@ -548,113 +569,73 @@ async def root():
                     });
                 }
 
-                // Call initAutoResize after loading memories
                 function fetchMemories() {
+                    // Cancel any pending fetch
+                    if (memController) {
+                        memController.abort();
+                    }
+                    memController = new AbortController();
+
                     const query = document.getElementById('query_input').value.trim();
                     const userId = document.getElementById('user_id_select').value;
                     const perPage = document.getElementById('per_page_input').value || 10;
-                    let url = "";
 
-                    // Always use pagination for both search and list views
-                    if (query) {
-                        // For search results, use the search endpoint with pagination
-                        url = `/search/?query=${encodeURIComponent(query)}&page=${currentPage}&per_page=${perPage}` + 
-                              (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
-                    } else {
-                        // For all memories, use the list endpoint with pagination
-                        url = `/list/?page=${currentPage}&per_page=${perPage}` + 
-                              (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
-                    }
+                    const url = query
+                        ? `/search/?query=${encodeURIComponent(query)}&page=${currentPage}&per_page=${perPage}` +
+                          (userId ? `&user_id=${encodeURIComponent(userId)}` : '')
+                        : `/list/?page=${currentPage}&per_page=${perPage}` +
+                          (userId ? `&user_id=${encodeURIComponent(userId)}` : '');
 
-                    fetch(url)
-                    .then(response => response.json())
-                    .then(data => {
-                        const resultsDiv = document.getElementById('results');
-                        resultsDiv.innerHTML = "";
-                       
-                        // Update pagination info for both search and list views
-                        if (data.pagination) {
-                            document.getElementById('page_info').textContent = 
-                                `Page ${data.pagination.current_page} of ${data.pagination.total_pages}`;
-                        }
+                    fetch(url, { signal: memController.signal })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (memController.signal.aborted) return;
 
-                        if(data.memories) {
-                            data.memories.forEach(function(memory) {
-                                const memoryDiv = document.createElement('div');
-                                memoryDiv.className = 'memory-item';
-                                const sortedKeywords = Object.entries(memory.keywords || {})
+                            const resultsDiv = document.getElementById('results');
+                            resultsDiv.innerHTML = "";
+
+                            // Update pagination info and current page
+                            if (data.pagination) {
+                                currentPage = data.pagination.current_page;
+                                document.getElementById('page_info').textContent =
+                                    `Page ${data.pagination.current_page} of ${data.pagination.total_pages}`;
+                            }
+
+                            (data.memories || data).forEach(memory => {
+                                const div = document.createElement('div');
+                                div.className = 'memory-item';
+                                const keywords = Object.entries(memory.keywords || {})
                                     .sort((a, b) => b[1] - a[1])
                                     .slice(0, 10);
-                                const keywordsHtml = sortedKeywords.length ? `                                    <div class="keywords">
-                                        ${sortedKeywords.map(([word, weight]) => `
-                                            <span class="keyword">
-                                                ${word}
-                                                <span class="weight">${weight}</span>
-                                            </span>
-                                        `).join('')}
-                                    </div>
-                                ` : '';
-                                memoryDiv.innerHTML = `
-                                    <div>
-                                        <strong>ID:</strong> ${memory.id} 
-                                        <strong>User:</strong> ${memory.user_id || 'N/A'}
-                                    </div>
+                                const keywordHtml = keywords.length
+                                    ? `<div class="keywords">${keywords.map(([word, weight]) =>
+                                        `<span class="keyword">${word}<span class="weight">${weight}</span></span>`
+                                      ).join('')}</div>`
+                                    : '';
+
+                                div.innerHTML = `
+                                    <div><strong>ID:</strong> ${memory.id} <strong>User:</strong> ${memory.user_id || 'N/A'}</div>
                                     <div class="metadata">
                                         ${memory.last_modified ? `<div>Last Modified: ${new Date(memory.last_modified).toLocaleString()}</div>` : ''}
                                         ${memory.last_action ? `<div>Last Action: ${memory.last_action}</div>` : ''}
                                     </div>
-                                    ${keywordsHtml}
+                                    ${keywordHtml}
                                     <textarea class="memory-text" id="text-${memory.id}" oninput="autoResize(this)">${memory.text || ''}</textarea>
                                     <div class="actions">
                                         <button class="button edit-button" onclick="updateMemory(${memory.id})">Update</button>
                                         <button class="button delete-button" onclick="deleteMemory(${memory.id}, '${memory.user_id || ''}')">Delete</button>
-                                    </div>
-                                `;
-                                resultsDiv.appendChild(memoryDiv);
+                                    </div>`;
+                                resultsDiv.appendChild(div);
                             });
-                        } else if(Array.isArray(data)) {
-                            data.forEach(function(memory) {
-                                const memoryDiv = document.createElement('div');
-                                memoryDiv.className = 'memory-item';
-                                const sortedKeywords = Object.entries(memory.keywords || {})
-                                    .sort((a, b) => b[1] - a[1])
-                                    .slice(0, 10);
-                                const keywordsHtml = sortedKeywords.length ? `                                    <div class="keywords">
-                                        ${sortedKeywords.map(([word, weight]) => `
-                                            <span class="keyword">
-                                                ${word}
-                                                <span class="weight">${weight}</span>
-                                            </span>
-                                        `).join('')}
-                                    </div>
-                                ` : '';
-                                memoryDiv.innerHTML = `
-                                    <div>
-                                        <strong>ID:</strong> ${memory.id} 
-                                        <strong>User:</strong> ${memory.user_id || 'N/A'}
-                                    </div>
-                                    <div class="metadata">
-                                        ${memory.last_modified ? `<div>Last Modified: ${new Date(memory.last_modified).toLocaleString()}</div>` : ''}
-                                        ${memory.last_action ? `<div>Last Action: ${memory.last_action}</div>` : ''}
-                                    </div>
-                                    ${keywordsHtml}
-                                    <textarea class="memory-text" id="text-${memory.id}" oninput="autoResize(this)">${memory.text || ''}</textarea>
-                                    <div class="actions">
-                                        <button class="button edit-button" onclick="updateMemory(${memory.id})">Update</button>
-                                        <button class="button delete-button" onclick="deleteMemory(${memory.id}, '${memory.user_id || ''}')">Delete</button>
-                                    </div>
-                                `;
-                                resultsDiv.appendChild(memoryDiv);
-                            });
-                        }
-                        
-                        // Initialize auto-resize for all textareas
-                        initAutoResize();
-                        
-                        // Always update visualization with current results
-                        updateVisualization();
-                    })
-                    .catch(error => alert('Error fetching memories: ' + error));
+
+                            initAutoResize();
+                            debouncedUpdateVisualization();
+                        })
+                        .catch(error => {
+                            if (error.name !== 'AbortError') {
+                                alert('Error fetching memories: ' + error);
+                            }
+                        });
                 }
 
                 function updateMemory(id) {
@@ -712,13 +693,8 @@ async def root():
                                     Index Terms: ${data.stats.index_terms}
                                 </div>`;
                         }
-                        
-                        // Refresh the view to update keyword frequencies
-                        const searchInput = document.querySelector('input[name="query"]');
-                        if (searchInput) {
-                            const event = new Event('keyup');
-                            searchInput.dispatchEvent(event);
-                        }
+
+                        fetchMemories();
                     })
                     .catch(error => {
                         console.error('Delete error:', error);
@@ -753,14 +729,9 @@ async def root():
                                     Index Terms: ${data.stats.index_terms}
                                 </div>`;
                         }
-                        
-                        // Refresh the view to update keyword frequencies
-                        const searchInput = document.querySelector('input[name="query"]');
-                        if (searchInput) {
-                            const event = new Event('keyup');
-                            searchInput.dispatchEvent(event);
-                        }
-                        
+
+                        fetchMemories();
+
                         isModified = false;
                     })
                     .catch(error => {
@@ -770,23 +741,40 @@ async def root():
                 }
 
                 function updateVisualization() {
+                    // Cancel any pending visualization request
+                    if (vizController) {
+                        vizController.abort();
+                    }
+                    vizController = new AbortController();
+
                     const query = document.getElementById('query_input').value;
                     const userId = document.getElementById('user_id_select').value;
                     const perPage = document.getElementById('per_page_input').value || 10;
-                    
+
                     const params = new URLSearchParams();
                     if (query) params.append('query', query);
                     if (userId) params.append('user_id', userId);
                     params.append('page', currentPage);
                     params.append('per_page', perPage);
-                    
-                    fetch('/visualize/?' + params.toString())
+
+                    fetch('/visualize/?' + params.toString(), {
+                        signal: vizController.signal
+                    })
                         .then(response => response.text())
                         .then(svg => {
-                            document.getElementById('visualization').innerHTML = svg;
+                            if (!vizController.signal.aborted) {
+                                document.getElementById('visualization').innerHTML = svg;
+                            }
                         })
-                        .catch(error => console.error('Error updating visualization:', error));
+                        .catch(error => {
+                            if (error.name !== 'AbortError') {
+                                console.error('Error updating visualization:', error);
+                            }
+                        });
                 }
+
+                // Create debounced version of updateVisualization
+                const debouncedUpdateVisualization = debounce(updateVisualization, 500);
                 
                 function highlightMemory(id) {
                     // Find the memory item in the results
@@ -907,7 +895,7 @@ async def root():
                         
                         // Refresh the current view
                         fetchMemories();
-                        updateVisualization();
+                        debouncedUpdateVisualization();
                         
                         // Clear status after 5 seconds
                         setTimeout(() => {
@@ -1084,21 +1072,19 @@ def _perform_search_sync(query: str, user_id: Optional[str], page: int, per_page
     if query:
         results.sort(key=lambda x: x["score"], reverse=True)
     
-    # Calculate pagination
-    total_items = len(results)
-    total_pages = math.ceil(total_items / per_page)
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    
+    # Calculate pagination with clamping
+    total = len(results)
+    page, per_page, total_pages, start, end = _paginate(total, page, per_page)
+
     # Get paginated results
-    paginated_results = results[start_idx:end_idx]
+    paginated_results = results[start:end]
     
     return {
         "memories": paginated_results,
         "pagination": {
             "current_page": page,
             "total_pages": total_pages,
-            "total_items": total_items,
+            "total_items": total,
             "per_page": per_page
         }
     }
@@ -1117,6 +1103,12 @@ def _generate_visualization_sync(query: str, user_id: Optional[str], page: int, 
     memory_to_keywords = {}
     max_keywords = 1
     
+    # Cap graph size to prevent O(n²) performance issues
+    if len(search_results) > 120:
+        # Sort by score and take top 120 results for visualization
+        sorted_results = sorted(search_results, key=lambda x: x["score"], reverse=True)
+        search_results = sorted_results[:120]
+
     # O(n) single pass to build indexes
     for result in search_results:
         mid = result["id"]
@@ -1151,9 +1143,9 @@ def _generate_visualization_sync(query: str, user_id: Optional[str], page: int, 
                     links[key] += 1
                     max_shared = max(max_shared, links[key])
 
-    # Force-directed layout calculation
-    iterations = 50  # Number of iterations for force-directed layout
-    k = 50  # Optimal distance between nodes
+    # Force-directed layout calculation (reduced cost)
+    iterations = 60  # Number of iterations for force-directed layout (reduced from 50)
+    k = 60  # Optimal distance between nodes (reduced from 50)
     temperature = 0.9  # Initial temperature for simulated annealing
     
     # Initialize random positions
@@ -1203,7 +1195,7 @@ def _generate_visualization_sync(query: str, user_id: Optional[str], page: int, 
             distance = max(0.1, math.sqrt(dx * dx + dy * dy))
             
             # Limit attraction based on minimum node distance
-            min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 1.2
+            min_distance = (node_sizes[mid1] + node_sizes[mid2]) * 2.2
             if distance > min_distance:
                 force = (distance - min_distance) * distance / (k * weight)
                 
@@ -1257,8 +1249,9 @@ def _generate_visualization_sync(query: str, user_id: Optional[str], page: int, 
         score_boost = data["score"] if query else 1
         size = min(25, base_size * (1 + score_boost / 2))
         
-        # Get top keyword
-        sorted_keywords = sorted(data["keywords"].items(), key=lambda x: x[1], reverse=True)
+        # Get top keyword (filter out short terms for node labels)
+        long_keywords = [(k, v) for k, v in data["keywords"].items() if len(k) >= 5]
+        sorted_keywords = sorted(long_keywords, key=lambda x: x[1], reverse=True)
         top_keyword = sorted_keywords[0][0] if sorted_keywords else ""
         
         # Node class with active state based on score
@@ -1308,14 +1301,12 @@ async def list_memories(
         if mid < len(cache['memories']) and cache['memories'][mid] is not None
     ]
     
-    # Calculate pagination
-    total_memories = len(valid_memories)
-    total_pages = math.ceil(total_memories / per_page)
-    start_idx = (page - 1) * per_page
-    end_idx = start_idx + per_page
-    
+    # Calculate pagination with clamping
+    total = len(valid_memories)
+    page, per_page, total_pages, start, end = _paginate(total, page, per_page)
+
     # Get paginated memories
-    paginated_ids = valid_memories[start_idx:end_idx]
+    paginated_ids = valid_memories[start:end]
     
     results = []
     for mid in paginated_ids:
@@ -1337,7 +1328,7 @@ async def list_memories(
         "pagination": {
             "current_page": page,
             "total_pages": total_pages,
-            "total_items": total_memories,
+            "total_items": total,
             "per_page": per_page
         }
     }

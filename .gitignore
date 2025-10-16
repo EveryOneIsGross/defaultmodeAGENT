@@ -9,27 +9,21 @@
 *.jsonl
 *.db
 
+CLAUDE.md
 # cache folder and archive folders
 cache/
 archive/
 prompt_archive/
 temp_files/
 scratch/
+tests/
 
 # all pycache folders
 __pycache__/
 
-# secret prompts
-agent/prompts/Aithirne
-agent/prompts/Naptha
-agent/prompts/Coireall
-agent/prompts/Eimhin
-agent/prompts/delphi_ma
-agent/prompts/delphi
-agent/prompts/tars_ma
-agent/prompts/tars
-
-# cursor rules
+# llm rules
 .cursor
+CLAUDE.md
+scratch_thoughts.md
 
 

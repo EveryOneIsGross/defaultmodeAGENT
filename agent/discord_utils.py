@@ -1,6 +1,7 @@
 import re
 import discord
 import logging
+import asyncio
 
 def sanitize_mentions(content: str, mentions: list) -> str:
     """Convert Discord mention IDs to readable usernames and channel names, preserving code blocks."""
@@ -79,6 +80,9 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
     if not content:
         return content
     
+    # Simple regex for DM fallback case only
+    MENTION_RE = re.compile(r'@([\w.\-_]+)')
+    
     # Check for code annotations to preserve them
     code_annotations = ['property', 'staticmethod', 'classmethod', 'decorator', 
                       'param', 'return', 'override', 'abstractmethod']
@@ -147,7 +151,7 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
             # Keep @ symbols if mentions_enabled, otherwise strip them
             if not mentions_enabled:
                 # Remove @ symbols that aren't part of code annotations
-                content = re.sub(r'@([\w\.\-_]+)', r'\1', content)
+                content = MENTION_RE.sub(r'\1', content)
     else:
         # For guild channels, build a dictionary of members for direct lookup
         members_dict = {}
@@ -197,10 +201,17 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
                 
                 # Only convert mentions if not in code block
                 if not in_code_block:
-                    # Convert to Discord mentions, handling longer names first
-                    for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
-                        if f"@{member_name}" in current_line:
-                            current_line = current_line.replace(f"@{member_name}", f"<@{member.id}>")
+                    # Convert to Discord mentions using consistent regex pattern
+                    def replace_mention(match):
+                        username = match.group(1)
+                        if username in members_dict:
+                            return f"<@{members_dict[username].id}>"
+                        elif username.lower() in members_dict:
+                            return f"<@{members_dict[username.lower()].id}>"
+                        else:
+                            return match.group(0)  # Keep original if no match
+                    
+                    current_line = MENTION_RE.sub(replace_mention, current_line)
                     
                     # Also handle bare usernames (without @) and convert to Discord mentions
                     for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
@@ -220,19 +231,15 @@ def format_discord_mentions(content: str, guild: discord.Guild, mentions_enabled
             
             content = '\n'.join(formatted_lines)
         else:
-            # Find all potential @mentions using a more inclusive regex
-            mentions = re.findall(r'@([\w.\-_]+)', content)
-            
-            for mention in sorted(mentions, key=len, reverse=True):
-                if mention.lower() in code_annotations:
-                    continue
-                    
-                if mention in members_dict:
-                    member = members_dict[mention]
-                    content = content.replace(f"@{mention}", member.display_name)
-                elif mention.lower() in members_dict:
-                    member = members_dict[mention.lower()]
-                    content = content.replace(f"@{mention}", member.display_name)
+            # Convert @mentions to display names using direct string matching
+            # Sort by length (longest first) to avoid partial replacements
+            for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):
+                if member_name.lower() in [a.lower() for a in code_annotations]:
+                    continue  # Skip code annotations
+                
+                # Replace @username with display_name
+                if f"@{member_name}" in content:
+                    content = content.replace(f"@{member_name}", member.display_name)
             
             # Also handle bare usernames (without @) and convert to display names
             for member_name, member in sorted(members_dict.items(), key=lambda x: len(x[0]), reverse=True):

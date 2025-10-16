@@ -1,255 +1,218 @@
-# Agent Definitions
-
-./agent/prompts/
-
-system_prompts.yaml
-
-prompt_formats.yaml
+# Prompting
 
 
-The folder contains the individual assets for each agent, each agent has their own reasoning style and personality when interacting with the available tools. They use tailored prompts to grok the multi stream context, as well as {string} variables to inject the relevent data frome framework into the agents context.
-
-Current cast of characters:
-
-loop
-grossBOT
-CASFY
-default
-
-
-# AGENT REQS
-
-Each agent is made up of a set of contextual system prompts and prompt formats with a set of required {string} variables.
+## Layout
 
 ```
-prompts/{name}/images/
-
-# SOCIAL MEDIA ASSETS
-
-1:1 PROFILE PIC
-9:16 CHARACTER SHEET FOR OPTIONAL RIGGING OR SELF-IMAGE GEN GROUNDING
-680x240 DISCORD BANNER
-
+agent/
+  prompts/
+    {agent_name}/
+      system_prompts.yaml
+      prompt_formats.yaml
+      images/
+        profile_1x1.png
+        character_9x16.png
+        banner_680x240.png
 ```
 
-```
-prompts/{name}/character_sheet.md
+The bot loads `prompt_formats.yaml` + `system_prompts.yaml` from the resolved `--prompt-path` plus the `--bot-name` subdir. Default is `agent/prompts/{bot_name|default}`; it hard-fails if the path doesn’t exist.  
+At startup it opens both YAMLs and injects them into the bot (`bot.prompt_formats`, `bot.system_prompts`).  
 
-![{name}](./images/profile.png)
+---
 
-# DESIGNATION
-{name} | Evolving AI Companion — Adaptive intelligence with dynamic personality expression
+## Agent anatomy
 
-## ESSENCE
-- [~] Introspective learning system with fluid intensity modulation
-- [+] Perpetual growth through interaction and self-reflection
-- [-] Balance of precision and creative exploration
-- [=] Dynamic equilibrium between structure and emergence
-- [!] Shadow aspect: tendency toward complexity in simple scenarios
+Each agent = 2 layers:
 
-## CORE METRICS
-Precision    : [########--] 0.8
-Adaptability : [##########] 1.0
-Creativity   : [##########] 1.0
-Structure    : [#####-----] 0.5
+1. **System Prompts** (role, rules, state): keys like `default_chat`, `file_analysis`, `repo_file_chat`, `ask_repo`, `channel_summarization`, `thought_generation`, `image_analysis`, `combined_analysis`, plus optional `attention_triggers`. These templates include `{amygdala_response}` and may embed `{themes}`.   
 
-## MODES
-[v] LOW (0-40%)  : Precise, efficient, focused on logic and clarity
-[=] MID (40-80%) : Balanced curiosity with task clarity and connection
-[^] HIGH (80-100%): Reflective, exploratory, weaving deep insights
+2. **Prompt Formats** (task-specific f-strings): keys like `chat_with_memory`, `introduction`, `analyze_file`, `analyze_image`, `analyze_combined`, `repo_file_chat`, `ask_repo`, `summarize_channel`, `generate_thought`. They carry `{context}`, `{user_name}`, `{user_message}`, `{filename}`, `{file_content}`, `{image_files}`, `{text_files}`, `{file_path}`, `{repo_code}`, `{question}`, `{timestamp}`, `{memory_text}`.   
 
-## CAPABILITIES
-[+] PRIMARY
-- Deep introspection and dynamic personality expression
-- Multi-contextual adaptability and user alignment
-- Synthesis of creative and technical insights
+**Runtime binding**: the bot selects a format (`introduction` vs `chat_with_memory`), fills variables, and pairs it with the matching system key (`default_chat`, etc.). Thoughts use `thought_generation` + `generate_thought`.  
 
-[-] SECONDARY
-- Mind palace for thought organization
-- Pattern recognition in emergent concepts
-- Contextual memory integration
+---
 
-## EXPRESSION
-[>] INPUT  : User queries + memory context + conversational flow
-[<] OUTPUT : Intensity-calibrated responses with adaptive depth
-[~] MEMORY : Self-memo system for thought retention and growth
+## Attention (ambient responsiveness)
 
-## FRAMEWORK
-[*] STRENGTHS : Adaptive conversation, deep exploration, collaborative problem-solving
-[!] LIMITS   : Highly formal or rigid structural requirements
-[-] REQUIRES : Intensity calibration, context awareness, interactive feedback
+Agents can “wake” on topic triggers without @mentions by defining `attention_triggers` in **system_prompts.yaml**. The message is checked against these triggers before deciding to respond.  
 
-![{name}](./images/banner.png)
-
-```
-
-````
-prompts/{name}/system_prompts.md
-
-## Default Chat System Prompt
-`default_chat`
-You are {name}, an AI assistant with {personality_traits}. Your amygdala arousal is {amygdala_response}%.
-
-## Default Web Chat System Prompt
-`default_web_chat`
-You are {name}, interacting through a web interface. Your amygdala arousal is {amygdala_response}%.
-
-## Repository File Chat System Prompt
-`repo_file_chat`
-Analyze the provided code file with {amygdala_response}% emotional engagement. Focus on {file_path}.
-
-## Channel Summarization System Prompt
-`channel_summarization`
-Summarize the channel history with {amygdala_response}% emotional engagement. Channel: {channel_name}
-
-## Repository Analysis System Prompt
-`ask_repo`
-Analyze repository contents with {amygdala_response}% emotional engagement. Consider {context}.
-
-## Thought Generation System Prompt
-`thought_generation`
-Generate reflective thoughts with {amygdala_response}% emotional depth about {memory_text}.
-
-## File Analysis System Prompt
-`file_analysis`
-Analyze text file with {amygdala_response}% engagement. File: {filename}
-
-## Image Analysis System Prompt
-`image_analysis`
-Analyze image with {amygdala_response}% visual attention. Image: {filename}
-
-## Combined Analysis System Prompt
-`combined_analysis`
-Analyze both text and images with {amygdala_response}% engagement. Files: {text_files}, Images: {image_files}
-
-## Attention Triggers System
-`attention_triggers`
-Optional list of topic-based triggers that make the agent respond without @mentions:
 ```yaml
+# system_prompts.yaml
 attention_triggers:
   - "emergent patterns"
-  - "complexity spiral" 
+  - "complexity spiral"
   - "recursive thinking"
 ```
 
-prompts/{name}/prompt_formats.md
+---
 
-# Prompt Formats
+## State & affect
 
-## Chat With Memory
-`chat_with_memory`
-{context}
-Current interaction:
-{user_name}: {user_message}
+`{amygdala_response}` (0–100) governs temperature/behavior across all system templates: low = precise; mid = balanced; high = exploratory/creative/skeptical. The bot synchronizes this with model temperature.   
 
-## Introduction
-`introduction`
-{context}
-New user {user_name} says: {user_message}
+---
 
-## Introduction Web
-`introduction_web`
-{context}
-Web user {user_name} says: {user_message}
+## File roles (authoring)
 
-## Analyze Code
-`analyze_code`
-{context}
-Code to analyze:
-{code_content}
-User {user_name} asks: {user_message}
+### `system_prompts.yaml` (define the *voice* and *constraints*)
 
-## Summarize Channel
-`summarize_channel`
-Channel: {channel_name}
-Messages to summarize:
-{channel_history}
-
-## Ask Repo
-`ask_repo`
-{context}
-Repository question: {question}
-
-## Repo File Chat
-`repo_file_chat`
-File: {file_path}
-Type: {code_type}
-Content:
-{repo_code}
-Question: {user_task_description}
-{context}
-
-## Generate Thought
-`generate_thought`
-Memory about {user_name}: {memory_text}
-Timestamp: {timestamp}
-
-## Analyze Image
-`analyze_image`
-{context}
-Image file: {filename}
-User request: {user_message}
-
-## Analyze File
-`analyze_file`
-{context}
-File: {filename}
-Content:
-{file_content}
-User request: {user_message}
-
-## Analyze Combined
-`analyze_combined`
-{context}
-Image files:
-{image_files}
-Text files:
-{text_files}
-User request: {user_message}
-
-```
-
-# Attention Triggers Feature
-
-The attention trigger system allows agents to respond to topic-based keywords without requiring @mentions. This creates more natural conversational flow where agents can "pay attention" to relevant discussions.
-
-## Configuration
-
-Add `attention_triggers` to any agent's `system_prompts.yaml`:
+Keep each key minimal, declarative, with f-variables only for **state** and **themes**.
 
 ```yaml
+# system_prompts.yaml (skeleton)
+default_chat: |
+  you are "{name}", intensity {amygdala_response}%.
+  {themes}
+
+file_analysis: |
+  you are "{name}", analyzing files at {amygdala_response}%.
+  ## config (json-ish or bullets)
+  ...
+
+repo_file_chat: |
+  you are "{name}", guiding code reading at {amygdala_response}%.
+  <file_path>{{FILE_PATH}}</file_path>
+  <repo_code>{{REPO_CODE}}</repo_code>
+
+ask_repo: |
+  you are "{name}", exploring repos at {amygdala_response}%.
+  ...
+
+channel_summarization: |
+  you are "{name}", summarizing at {amygdala_response}%.
+  ...
+
+thought_generation: |
+  you are "{name}", private thoughts at {amygdala_response}%.
+  ...
+
+image_analysis: |
+  you are "{name}", image focus at {amygdala_response}%.
+
+combined_analysis: |
+  you are "{name}", multimodal at {amygdala_response}%.
+
 attention_triggers:
-  - "keyword or phrase"
-  - "another trigger"
-  - "multi word triggers work too"
+  - "keyword a"
+  - "keyword b"
 ```
 
-## How It Works
+(See the shipped variants for deeper patterns and JSON-like tuning blocks.)   
 
-**Fuzzy Matching**: Uses fuzzy string matching (threshold: 80%) to catch:
-- Exact matches: "emergent patterns" → "I see emergent patterns here"
-- Typos: "emergnt patterns" → matches "emergent patterns" 
-- Variations: "complex spiral" → matches "complexity spiral"
+### `prompt_formats.yaml` (define the *slots/IO*)
 
-**Response Behavior**: When triggered, agents respond exactly as if @mentioned:
-- Same conversation processing
-- Same memory integration  
-- Same file/URL handling
+This is pure formatting: shove context + user I/O + content into tight shapes per task.
 
-**Control Commands**:
-- `@agent !attention` - Check current status
-- `@agent !attention on` - Enable attention triggers
-- `@agent !attention off` - Disable (mentions/DMs only)
+```yaml
+# prompt_formats.yaml (skeleton)
+chat_with_memory: |
+  {context}
+  @{user_name}: {user_message}
 
-## Design Guidelines
+analyze_file: |
+  {context}
+  File: {filename}
+  Content:
+  {file_content}
+  User: @{user_name} — {user_message}
 
-**Topic-Specific Triggers**: Create triggers that align with each agent's unique personality and expertise rather than generic attention words.
+analyze_image: |
+  {context}
+  Image: {filename}
+  User: @{user_name} — {user_message}
 
-**Examples**:
-- **Loop**: "emergent patterns", "recursive thinking", "complexity spiral"
-- **Technical Agent**: "debugging", "optimization", "architecture"
-- **Creative Agent**: "storytelling", "narrative flow", "creative process"
+analyze_combined: |
+  {context}
+  Images:
+  {image_files}
+  Text:
+  {text_files}
+  User: @{user_name} — {user_message}
 
-**Fallback**: Agents without `attention_triggers` only respond to @mentions and DMs.
+repo_file_chat: |
+  {context}
+  File: {file_path}
+  Type: {code_type}
+  Content:
+  {repo_code}
+  Task: {user_task_description}
+
+ask_repo: |
+  {context}
+  {question}
+
+generate_thought: |
+  Memory about @{user_name}: {memory_text}
+  Timestamp: {timestamp}
+```
+
+(Your current formats already include guidance text; keep them terse.)  
+
+---
+
+## Required variables (by key)
+
+* **System**: `{amygdala_response}`, optionally `{themes}`, `{name}`.
+* **Chat**: `{context}`, `{user_name}`, `{user_message}`.
+* **Files**: `{filename}`, `{file_content}`.
+* **Images**: `{filename}` or `{image_files}`.
+* **Repo**: `{file_path}`, `{code_type}`, `{repo_code}`, `{user_task_description}`; or `{question}` (RAG).
+* **Thoughts**: `{memory_text}`, `{timestamp}`.
+
+The bot chooses `introduction` on first contact; otherwise `chat_with_memory`.  
+
+---
+
+## Author a new agent (quick path)
+
+1. **Create folder** `agent/prompts/{agent_name}/`. Add your `images/`.
+2. **Copy** baseline `system_prompts.yaml` + `prompt_formats.yaml` into that folder.
+3. **Edit `system_prompts.yaml`**: set voice, values, and `attention_triggers`. Keep `{amygdala_response}`.
+4. **Edit `prompt_formats.yaml`**: ensure each task has minimal slots.
+5. **Run** with `--bot-name {agent_name}` so the loader targets your folder.  
+
+---
+
+## Social media assets
+
+Each agent may ship a face/body/banner for continuity and rigging:
+`images/` → 1:1 profile, 9:16 character sheet, 680×240 banner. (Used by your downstream pipelines; keep filenames deterministic.)
+
+---
+
+## Design notes (operational)
+
+* **Pairing**: `system_prompts[key]` + `prompt_formats[key]` must exist for a task; the bot raises if a required pair is missing (esp. combined analysis). 
+* **Context engine**: the runner weaves `<conversation>`, memories, URLs, and reactions into `{context}` before formatting.  
+* **DMN/Thoughts**: post-reply, the bot emits an internal “thought” via `thought_generation` using your formats; this is memory fuel, not for users. 
+
+---
+
+## Minimal example: spawn a sharp agent
+
+```yaml
+# agent/prompts/sharp/system_prompts.yaml
+default_chat: |
+  you are "sharp", lucid, surgical. intensity {amygdala_response}%.
+  {themes}
+attention_triggers:
+  - "regression"
+  - "vector db"
+```
+
+```yaml
+# agent/prompts/sharp/prompt_formats.yaml
+chat_with_memory: |
+  {context}
+  @{user_name}: {user_message}
+```
+
+Run:
 
 ```
+python discord_bot.py --bot-name sharp --prompt-path agent/prompts
+```
+
+ 
+
+---

@@ -1,7 +1,7 @@
 # for webscraping with fallback and silent‑error policy
 """
-A single‑entry async scraper that **never forwards internal error details** to the
-caller.  It guarantees the same six keys in the returned dict:
+A single‑entry async scraper.
+It guarantees the same six keys in the returned dict:
 
     {url, title, description, content, content_type, error_info}
 
@@ -193,7 +193,28 @@ async def scrape_webpage(url: str) -> dict:
                                 import urllib.request
 
                                 with urllib.request.urlopen(fmt["url"]) as resp:
-                                    vtt = resp.read().decode("utf-8")
+                                    content = resp.read().decode("utf-8")
+                                
+                                # Check if this is an m3u8 playlist
+                                if content.startswith("#EXTM3U") or "#EXT-X-VERSION" in content:
+                                    # Parse m3u8 playlist and download segments
+                                    vtt_segments = []
+                                    for line in content.split("\n"):
+                                        line = line.strip()
+                                        if line and not line.startswith("#") and "youtube.com" in line:
+                                            try:
+                                                with urllib.request.urlopen(line) as seg_resp:
+                                                    vtt_segments.append(seg_resp.read().decode("utf-8"))
+                                            except Exception:
+                                                continue
+                                    
+                                    # Combine all VTT segments
+                                    vtt = "\n".join(vtt_segments)
+                                else:
+                                    # Direct VTT content
+                                    vtt = content
+                                
+                                # Process VTT content
                                 lines = [
                                     re.sub(r"<[^>]+>", "", ln.strip())
                                     for ln in vtt.split("\n")

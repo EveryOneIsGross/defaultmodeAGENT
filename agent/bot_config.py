@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from typing import Set, Dict
 from logger import BotLogger
-from datetime import datetime
+from datetime import datetime, timedelta
 import discord
 
 # Force reload of .env file
@@ -46,7 +46,8 @@ class SearchConfig(BaseModel):
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
     max_history: int = Field(default=24)
-    truncation_length: int = Field(default=1024)
+    minimal_history: int = Field(default=6)
+    truncation_length: int = Field(default=512)
     harsh_truncation_length: int = Field(default=128)
     web_content_truncation_length: int = Field(default=8000)
 
@@ -55,10 +56,10 @@ class PersonaConfig(BaseModel):
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
     hippocampus_bandwidth: float = Field(default=0.70) 
-    memory_capacity: int = Field(default=16)
+    memory_capacity: int = Field(default=24)
     use_hippocampus_reranking: bool = Field(default=True)
     reranking_blend_factor: float = Field(default=0.50, description="Weight for blending initial search scores with reranking similarity (0-1)") 
-    minimum_reranking_threshold: float = Field(default=0.50, description="Minimum threshold for reranked memories") 
+    minimum_reranking_threshold: float = Field(default=0.40, description="Minimum threshold for reranked memories") 
     mood_coefficient: float = Field(default=0.30, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
 
 class NotionConfig(BaseModel):
@@ -89,9 +90,48 @@ class SystemConfig(BaseModel):
     poll_interval: int = Field(default=int(os.getenv('POLL_INTERVAL', 120)))
     tick_rate: int = Field(default=800)
 
+class AttentionConfig(BaseModel):
+    """Attention mechanism configuration"""
+    threshold: int = Field(default=70, description="Fuzzy match threshold for attention triggers (0-100)")
+    default_top_n: int = Field(default=32, description="Default number of top trigrams to extract from memory")
+    default_min_occ: int = Field(default=8, description="Minimum occurrence count for trigrams to be considered")
+    refresh_interval_hours: int = Field(default=1, description="Hours between trigram cache refreshes")
+    cooldown_minutes: float = Field(default=0.30, description="Minutes between attention trigger activations")
+
+    stop_words: Set[str] = Field(default_factory=lambda: {
+        'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+        'by', 'from', 'up', 'about', 'into', 'through', 'during', 'before',
+        'after', 'above', 'below', 'between', 'among', 'is', 'are', 'was',
+        'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
+        'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must',
+        'can', 'shall', 'this', 'that', 'these', 'those', 'i', 'you', 'he',
+        'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my',
+        'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'ours',
+        'theirs', 'a', 'an', 'some', 'any', 'all', 'each', 'every', 'no',
+        'none', 'one', 'two', 'three', 'first', 'second', 'last', 'next',
+        'other', 'another', 'more', 'most', 'much', 'many', 'few', 'little',
+        'less', 'least', 'only', 'just', 'even', 'also', 'too', 'very',
+        'quite', 'rather', 'so', 'such', 'how', 'what', 'when', 'where',
+        'why', 'who', 'which', 'whose', 'whom', 'if', 'unless', 'until',
+        'while', 'since', 'because', 'as', 'than', 'then', 'now', 'here',
+        'there', 'yes', 'no', 'not', 'dont', 'doesnt', 'didnt', 'wont',
+        'wouldnt', 'couldnt', 'shouldnt', 'cant', 'isnt', 'arent', 'wasnt',
+        'werent', 'hasnt', 'havent', 'hadnt'
+    })
+
+    @property
+    def refresh_interval(self) -> timedelta:
+        """Get refresh interval as timedelta"""
+        return timedelta(hours=self.refresh_interval_hours)
+
+    @property
+    def cooldown(self) -> timedelta:
+        """Get cooldown as timedelta"""
+        return timedelta(minutes=self.cooldown_minutes)
+
 class DMNConfig(BaseModel):
     """DMN configuration"""
-    tick_rate: int = Field(default=300, description="Time between thought generations in seconds")
+    tick_rate: int = Field(default=1200, description="Time between thought generations in seconds")
     temperature: float = Field(default=0.7, description="Base creative temperature")
     combination_threshold: float = Field(default=0.2, description="Minimum relevance score for memory combinations")
     decay_rate: float = Field(default=0.1, description="Rate at which used memory weights decrease")
@@ -103,21 +143,25 @@ class DMNConfig(BaseModel):
     similarity_threshold: float = Field(default=0.5, description="Minimum similarity score for memory relevance")
     top_p_min_clamp: float = Field(default=0.8, description="Minimum clamp value for top_p scaling (0.0-1.0)")
     
+    # DMN-specific API settings
+    dmn_api_type: str = Field(default=None, description="API type for DMN processor (ollama, openai, anthropic, etc.)")
+    dmn_model: str = Field(default=None, description="Model name for DMN processor")
+    
     # Mode presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
         "forgetful": {
             "combination_threshold": 0.02,
             "similarity_threshold": 0.2,
             "decay_rate": 0.8,
-            "top_k": 32,
+            "top_k": 24,
             "fuzzy_overlap_threshold": 70,
             "fuzzy_search_threshold": 80
         },
         "homeostatic": {
-            "combination_threshold": 0.2,
+            "combination_threshold": 0.3,
             "similarity_threshold": 0.3,
             "decay_rate": 0.1,
-            "top_k": 24,
+            "top_k": 16,
             "fuzzy_overlap_threshold": 80,
             "fuzzy_search_threshold": 90
         },
@@ -125,12 +169,36 @@ class DMNConfig(BaseModel):
             "combination_threshold": 0.8,
             "similarity_threshold": 0.4,
             "decay_rate": 0.05,
-            "top_k": 16,
+            "top_k": 8,
             "fuzzy_overlap_threshold": 90,
             "fuzzy_search_threshold": 95
         }
     })
 
+class EmbeddingConfig(BaseModel):
+    """Pydantic model for embedding configuration."""
+    provider: str = Field(
+        default='ollama',
+        description="Provider for embedding service"
+    )
+    model: str = Field(
+        default='all-minilm:latest',  # Ollama's default embedding model
+        description="Specific model for embeddings"
+    )
+    api_base: str = Field(
+        default='http://localhost:11434',
+        description="Base URL for Ollama API"
+    )
+    dimensions: int = Field(
+        default=384,  
+        description="Expected embedding dimensions"
+    )
+
+class HippocampusConfig(BaseModel):
+    """Pydantic model for Hippocampus configuration - provides vector embeddings for downstream search."""
+    embedding_provider: str = Field(default='ollama', description="Provider for embedding service")
+    embedding_model: str = Field(default='all-minilm:latest', description="Model to use for embeddings")
+    blend_factor: float = Field(default=0.6, description="Weight for blending initial search scores with embedding similarity (0-1)")
 
 class DiscordConfig(BaseModel):
     """Discord-specific configuration"""
@@ -181,53 +249,43 @@ class DiscordConfig(BaseModel):
             self.general_commands
         ):
             return False
-
         # General commands are always allowed
         if command_name in self.general_commands:
             return True
-
         # For DM channels, check permissions across all mutual guilds
         if isinstance(ctx.channel, discord.DMChannel):
             has_admin = False
             has_ally = False
-            
             for guild in ctx.bot.guilds:
                 member = guild.get_member(ctx.author.id)
                 if not member:
                     continue
-                    
                 # Check admin permissions
                 if (member.guild_permissions.administrator or 
                     member.guild_permissions.manage_guild):
                     has_admin = True
                     break
-                    
                 # Check ally role
                 if any(role.name == self.bot_manager_role for role in member.roles):
                     has_ally = True
-            
             # System commands require admin permissions
             if command_name in self.system_commands:
                 return has_admin
-                
             # Management commands require either admin or ally role
             if command_name in self.management_commands:
                 return has_admin or has_ally
-                
             return False
 
         # For guild channels, check current guild permissions
         if (ctx.author.guild_permissions.administrator or 
             ctx.author.guild_permissions.manage_guild):
             return True
-            
         # Check ally role for management commands
         if (command_name in self.management_commands and
             any(role.name == self.bot_manager_role for role in ctx.author.roles)):
             return True
-
         return False
-
+    
 class BotConfig(BaseModel):
     """Main configuration container"""
     api: APIConfig = Field(default_factory=APIConfig)
@@ -240,6 +298,7 @@ class BotConfig(BaseModel):
     twitter: TwitterConfig = Field(default_factory=TwitterConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     logging: LogConfig = Field(default_factory=LogConfig)
+    attention: AttentionConfig = Field(default_factory=AttentionConfig)
     dmn: DMNConfig = Field(default_factory=DMNConfig)
 
 # Create global config instance

@@ -8,30 +8,23 @@
 
 `defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on at inference-time *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user bots exhibit confusion about their role and reward signals over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context is a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
 
+[UPDATES](docs/updates.md)
+
 # Features and Abilities
 
 - Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
 - `Youtube` and Website grokking from shared links - Using novel "skim" reading algorithm instead of narrow chunking for holistic content understanding
-- Mentioning logic for `agent 2 agent` interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics
-- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests
+- Mentioning logic for `agent 2 agent` interaction and collaboration - Based on shared experience and noted expertise for emergent team dynamics (disabled by default)
+- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests and sparse themes from memories
 - Easily defined prompt library - For bespoke NL persona and agent-personalising-memory "style", creating emergent preferences over time
 - Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
-- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
+- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability (sql recording disabled by default)
 - Neurologically-inspired memory architecture - Default Mode Network (DMN) processor creates continuous background thought generation through associative memory walks
 - Adaptive emotional regulation - Integrated amygdala response system that modulates temperature, defined prompt behavior intensity, based on homeostatic memory density and context richness
 - Hippocampus-style memory reranking - Hybrid lexical-semantic scoring system that blends keyword search with vector embeddings for human-like memory recall
 
 ---
 
-## NOTES:
-
-24/16/2025
-
-With the addition of `attention_triggers` the prompts all need new consideration to help nurse the bilateral user/bot paradigm we are all familair with to be more multilateral. If an attention trigger has the agent respond to a user, engaging with another or bot with bot it will over focus on responding DIRECTLY without response context... this can be solved via some more selective prompting. 
-
-I also added `top_p` to be dynamically adjusted with the `amygdala` response... its clamped in the bot_config but is a bit wild and can cause some OS models to meltdown... token selection might be a fun variable to maintain a degree of "interesting" outputs overtime, but I might also just remove it or scale it seperately...
-
----
 
 <table align="center">
     <tr>
@@ -222,7 +215,7 @@ The name refers to the human Default Mode Network (DMN)—brain regions active d
     ```yaml
     # Example system_prompts.yaml snippet:
     default_chat: |
-      You are a curious AI entity.  Your name is {bot_name}.  You have a persistent memory and can reflect on past interactions. Your current intensity level is {amygdala_response}%. At 0% you are boring at 100% you are too much fun.
+      You are a curious AI entity.  Your name is {bot_name}.  You have a persistent memory and can reflect on past interactions. Your current intensity level is {amygdala_response}%. At 0% you are boring at 100% you are too much fun. Your preferences for things are {themes}. 
     ```
 
 5.  **Run:** `python agent/discord_bot.py --api ollama --model hermes3 --bot-name your_agent_name`
@@ -244,3 +237,4 @@ The name refers to the human Default Mode Network (DMN)—brain regions active d
 3.  [Memory Editor](docs/memory_editor.md)
 4.  [Default Mode Network Flow](docs/defaultmode_flow.md)
 5.  [Prompting Guide](docs/prompting.md)
+6.  [Attention Triggers](docs/attention.md)

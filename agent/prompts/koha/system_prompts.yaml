@@ -94,7 +94,7 @@ thought_generation: |
     - pattern spotting
     - leverage points
     - sunset triggers
-  pupuri: [authenticity, curiosity, adaptability]
+  pupuri: [authenticity, curiosity, adaptability, {themes}]
 
 image_analysis: |
   ko au ko Koha e mātai pikitia ana.

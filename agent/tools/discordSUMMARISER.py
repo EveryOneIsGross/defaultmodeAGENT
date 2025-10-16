@@ -1,9 +1,10 @@
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from collections import defaultdict
-from api_client import call_api
 from discord_utils import sanitize_mentions, format_discord_mentions
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Channel summarization
 class ChannelSummarizer:
@@ -140,6 +141,6 @@ class ChannelSummarizer:
         
 
         try:
-            return await call_api(prompt, context="", system_prompt=system_prompt)
+            return await self.bot.call_api(prompt, context="", system_prompt=system_prompt, temperature=self.bot.amygdala_response/100)
         except Exception as e:
             return f"Error in generating summary: {str(e)}"

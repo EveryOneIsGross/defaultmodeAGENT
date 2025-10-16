@@ -3,9 +3,9 @@ import random
 from collections import defaultdict
 import logging
 from datetime import datetime
-from api_client import call_api, update_api_temperature, update_api_top_p
 import json
 import re
+import os
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
@@ -17,61 +17,50 @@ class DMNProcessor:
     Default Mode Network (DMN) processor that implements background thought generation
     through random memory walks and associative combination.
     """
-    def __init__(self, memory_index, prompt_formats, system_prompts, bot, dmn_config=None, mode="conservative"):
+    def __init__(self, memory_index, prompt_formats, system_prompts, bot, dmn_config=None, mode="conservative", dmn_api_type=None, dmn_model=None):
         # Core components
         self.memory_index = memory_index
         self.prompt_formats = prompt_formats
         self.system_prompts = system_prompts
         self.bot = bot
-        
         # Use bot's logger
         self.logger = bot.logger if hasattr(bot, 'logger') else logging.getLogger('bot.default')
-
         # Load DMN configuration
         if dmn_config is None:
             from bot_config import config
             dmn_config = config.dmn
-        
         # Operational settings
         self.tick_rate = dmn_config.tick_rate
         self.enabled = False
         self.task = None
-        
         # Thought generation parameters
         self.temperature = dmn_config.temperature
         self.amygdala_response = 50  # Default intensity
         self.combination_threshold = dmn_config.combination_threshold
-        
         # Memory decay settings
         self.decay_rate = dmn_config.decay_rate
         self.memory_weights = defaultdict(lambda: defaultdict(lambda: 1.0))  # user_id -> memory -> weight
         self.top_k = dmn_config.top_k
-
         # Retrived Memory Density Temperature Multiplier settings
         self.density_multiplier = dmn_config.density_multiplier
-
         # Fuzzy matching settings
         self.fuzzy_overlap_threshold = dmn_config.fuzzy_overlap_threshold
         self.fuzzy_search_threshold = dmn_config.fuzzy_search_threshold
-        
         # Memory context compression settings
         self.max_memory_length = dmn_config.max_memory_length
-        
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
-
         # Search similarity settings
         self.similarity_threshold = dmn_config.similarity_threshold
-        
         # Top-p scaling settings
         self.top_p_min_clamp = dmn_config.top_p_min_clamp
-        
         # Store modes from config
         self.modes = dmn_config.modes
-        
         # Set initial mode
         self.set_mode(mode)
-        
-        self.logger.info("DMN Processor initialized")
+        # DMN-specific API settings
+        self.dmn_api_type = dmn_api_type
+        self.dmn_model = dmn_model
+        self.logger.info(f"DMN Processor initialized with API: {dmn_api_type or 'default'}, Model: {dmn_model or 'default'}")
 
     async def start(self):
         """Start the DMN processing loop."""
@@ -113,7 +102,6 @@ class DMNProcessor:
         user_ids = list(self.memory_index.user_memories.keys())
         if not user_ids:
             return None
-
         # Use memory count directly as weights (not ranks)
         user_weights = []
         user_memory_counts = []
@@ -121,10 +109,8 @@ class DMNProcessor:
             memory_count = len(self.memory_index.user_memories[user_id])
             user_weights.append(memory_count)
             user_memory_counts.append((user_id, memory_count))
-        
         # Sort by memory count for logging (highest first)
         user_memory_counts.sort(key=lambda x: x[1], reverse=True)
-        
         # Log top users by memory count with names
         top_users = user_memory_counts[:5]  # Show top 5
         top_users_with_names = []
@@ -137,7 +123,6 @@ class DMNProcessor:
             top_users_with_names.append((user_name, count))
         
         self.logger.info(f"User memory ranking - Top users: {top_users_with_names}")
-        
         # Weighted random selection
         total_weight = sum(user_weights)
         if total_weight <= 0:
@@ -155,7 +140,6 @@ class DMNProcessor:
         user_memories = self.memory_index.user_memories[selected_user_id]
         if not user_memories:
             return None
-
         # Use user-specific weights
         weighted_memories = [
             (self.memory_index.memories[memory_id], 
@@ -163,14 +147,11 @@ class DMNProcessor:
             for memory_id in user_memories
             if self.memory_index.memories[memory_id] is not None
         ]
-        
         if not weighted_memories:
             return None
-
         total_weight = sum(weight for _, weight in weighted_memories)
         if total_weight <= 0:
             return None
-
         # Random selection based on weights
         selection_point = random.uniform(0, total_weight)
         current_weight = 0
@@ -197,30 +178,25 @@ class DMNProcessor:
                 user_name = user.name if user else "Unknown User"
             except Exception as e:
                 user_name = "Unknown User"
-            
             # Run memory search in executor to prevent blocking
             try:
                 loop = asyncio.get_event_loop()
                 related_memories = await loop.run_in_executor(
                     None,
-                    lambda: self.memory_index.search(seed_memory, user_id=user_id, k=self.top_k)
+                    lambda: self.memory_index.search(seed_memory, user_id=user_id, k=int(self.top_k))
                 )
             except Exception as e:
                 continue
-            
             # Filter out the seed memory from results and apply weight threshold
             related_memories = [
                 (memory, score) for memory, score in related_memories 
                 if memory != seed_memory and score >= self.similarity_threshold
             ]
-            
             # Log similarity threshold filtering results
             self.logger.info(f"After similarity threshold ({self.similarity_threshold}): {len(related_memories)} memories selected")
-            
             # If we found any related memories, we can proceed
             if related_memories:
                 break
-                
             self.logger.info(f"Attempt {attempt + 1}: No related memories found, trying another seed memory")
             if attempt == max_retries - 1:
                 self.logger.info("Max retries reached without finding any memories")
@@ -237,7 +213,7 @@ class DMNProcessor:
         })
 
         # Build memory context using ALL related memories
-        memory_context = f"Considering {len(related_memories)} thoughts:\n\n"
+        memory_context = f"{len(related_memories)} Connected memories:\n\n"
         if related_memories:
             for memory, score in sorted(related_memories, key=lambda x: x[1], reverse=True):
                 # Convert any timestamp in the memory to temporal expression
@@ -263,7 +239,6 @@ class DMNProcessor:
         if similar_memories:
             # Sort by combined score
             similar_memories.sort(key=lambda x: x[1], reverse=True)
-
             # Log memory processing
             self.logger.log({
                 'event': 'dmn_memory_processing',
@@ -273,14 +248,12 @@ class DMNProcessor:
                 'combination_threshold': self.combination_threshold,
                 'memory_context': memory_context
             })
-
-            # Get memory IDs for memories we'll use
+            # Get memory IDs for memories
             seed_memory_id = self.memory_index.memories.index(seed_memory)
             top_memories = [(seed_memory, seed_memory_id)] + [
                 (memory, self.memory_index.memories.index(memory))
                 for memory, _ in similar_memories[1:]
             ]
-            
             # Find overlapping terms between seed and each result
             memory_terms_map = {}
             for memory, memory_id in top_memories:
@@ -289,17 +262,14 @@ class DMNProcessor:
                     if memory_id in ids
                 )
                 memory_terms_map[memory_id] = memory_terms
-            
             # Find terms that overlap between seed and each result
             seed_terms = memory_terms_map[seed_memory_id]
             overlapping_terms = set()
             fuzzy_matches = defaultdict(set)
-            
             # First pass - exact matches
             for memory_id in memory_terms_map:
                 if memory_id != seed_memory_id:
                     overlapping_terms.update(seed_terms & memory_terms_map[memory_id])
-            
             # Second pass - fuzzy matches
             for seed_term in seed_terms:
                 for memory_id in memory_terms_map:
@@ -342,16 +312,17 @@ class DMNProcessor:
             memory_text=memory_context,
             seed_memory=temporally_parsed_seed_memory,
             timestamp=timestamp,  # Using natural language timestamp
-            user_name=user_name
+            user_name=user_name,
+            amygdala_response=self.amygdala_response
         )
         
         # personality temperature scaling based on memory density relative to top_k
         num_results = len(related_memories)
 
-        if self.top_k > 0:
+        if int(self.top_k) > 0:
             # Calculate inverse density: fewer memories = higher multiplier
             # Cap density at 1.0 to prevent going below 0.0
-            density = min(1.0, num_results / self.top_k)
+            density = min(1.0, num_results / max(1, int(self.top_k)))
             intensity_multiplier = 1.0 - density
         else:
             # Default to max intensity if top_k is 0 (edge case)
@@ -360,38 +331,40 @@ class DMNProcessor:
             
         # Calculate final intensity using the exact original clamping/scaling
         new_intensity = min(100, max(0, int(100 * intensity_multiplier)))
-        
         # Update both DMN and global state
         self.amygdala_response = new_intensity
         self.temperature = new_intensity / 100.0
         self.bot.amygdala_response = new_intensity  # Update bot's amygdala arousal
-        
-        # Update global API temperature through bot's update_temperature function
-        update_api_temperature(new_intensity)
-        
+        # Update bot's private API temperature (not global)
+        self.bot.update_api_temperature(new_intensity)
         # Update top_p with inverse scaling using same intensity value
         # High temp (sparse) -> high top_p (diverse), Low temp (dense) -> low top_p (focused)
         top_p_value = max(self.top_p_min_clamp, new_intensity / 100.0)
-        update_api_top_p(top_p_value)
-        
-        self.logger.info(f"Updated global amygdala arousal to {new_intensity} based on memory density")
-        self.logger.info(f"Updated global top_p to {top_p_value:.2f} (inverse density scaling)")
-
+        self.bot.update_api_top_p(top_p_value)
+        self.logger.info(f"Updated bot amygdala arousal to {new_intensity} based on memory density")
+        self.logger.info(f"Updated bot top_p to {top_p_value:.2f} (inverse density scaling)")
         system_prompt = self.system_prompts['dmn_thought_generation'].replace(
             '{amygdala_response}',
             str(self.amygdala_response)
         )
-        
         # truncate the middle of each memory in the memory_context using truncate_middle
         memory_context = "\n\n".join([truncate_middle(memory, self.max_memory_length) for memory in memory_context.split("\n\n")])
 
         try:
-            new_thought = await call_api(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                temperature=self.temperature
-            )
+            # Use call_api with override parameters without changing global state
+            api_kwargs = {
+                'prompt': prompt,
+                'system_prompt': system_prompt,
+                'temperature': self.temperature
+            }
             
+            # Only add overrides if they're actually set
+            if self.dmn_api_type:
+                api_kwargs['api_type_override'] = self.dmn_api_type
+            if self.dmn_model:
+                api_kwargs['model_override'] = self.dmn_model
+            
+            new_thought = await self.bot.call_api(**api_kwargs)
             new_thought = clean_response(new_thought)
             
             # Gather unique users from related memories
@@ -410,19 +383,17 @@ class DMNProcessor:
             # Save generated thought as new memory
             timestamp = datetime.now().strftime('(%H:%M [%d/%m/%y])')
             users_str = f" and {', '.join(memory_users)}" if memory_users else ""
-
             # Clean username - remove all possible leading Discord role markers
             clean_name = re.sub(r'^[.!~*$]', '', user_name).strip()
             thought_memory = f"Reflections on priors with @{clean_name}{users_str} {timestamp}:\n{new_thought}"
-            
             # Store memory without metadata
-            self.memory_index.add_memory(user_id, thought_memory)
-            
+            await self.memory_index.add_memory_async(user_id, thought_memory)
+
+
             # Process memory weights and cleanup if we have memory state
             if 'memory_update_state' in locals():
                 state = memory_update_state
                 affected_memories = []
-
                 # First remove overlapping terms
                 for memory, memory_id in state['top_memories'][1:]:  # Skip seed memory
                     terms_removed = state['memory_terms_map'][memory_id] & state['overlapping_terms']
@@ -430,8 +401,7 @@ class DMNProcessor:
                     if terms_removed:
                         affected_memories.append((memory, terms_removed))
                         self.logger.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
-                        self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
-                        
+                        #self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
                         # Update inverted index directly
                         for term in terms_removed:
                             if term in self.memory_index.inverted_index:
@@ -452,16 +422,12 @@ class DMNProcessor:
                         decay = removed_terms / len(original_terms)
                         # Use user-specific weight decay
                         self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
-                        self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
+                        #self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
                 self.memory_index.save_cache()
                 self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
 
             # Add cleanup here after new memory addition and weight updates
             self._cleanup_disconnected_memories()
-            
-            # Save the cache after all updates
-            # self.memory_index.save_cache()
-            
             # Log successful thought generation
             self.logger.log({
                 'event': 'dmn_thought_generated',
@@ -479,7 +445,6 @@ class DMNProcessor:
         except Exception as e:
             error_msg = f"Failed to generate DMN thought: {str(e)}"
             self.logger.error(error_msg)
-            
             # Log error in thought generation
             self.logger.log({
                 'event': 'dmn_thought_error',
@@ -495,7 +460,6 @@ class DMNProcessor:
         connected_memories = set()
         for term_memories in self.memory_index.inverted_index.values():
             connected_memories.update(term_memories)
-        
         # Find disconnected memories for each user
         for user_id, memories in list(self.memory_index.user_memories.items()):
             disconnected = sorted([mid for mid in memories if mid not in connected_memories], reverse=True)
@@ -504,7 +468,6 @@ class DMNProcessor:
                 for memory_id in disconnected:
                     if memory_id in self.memory_weights[user_id]:
                         del self.memory_weights[user_id][memory_id]
-                
                 # Remove from main memories list and adjust indices
                 for memory_id in disconnected:
                     self.memory_index.memories.pop(memory_id)
@@ -530,19 +493,14 @@ class DMNProcessor:
                 # Remove users with no memories left
                 if not self.memory_index.user_memories[user_id]:
                     del self.memory_index.user_memories[user_id]
-                
                 # print the disconnected memories
                 self.logger.info(f"Cleaned up {len(disconnected)} disconnected memories for user {user_id}")
-                
                 #format the disconnected memories for logging
                 disconnected_memories = [self.memory_index.memories[mid] for mid in disconnected]
-                
                 # Save the cleaned up state
                 self.memory_index.save_cache()
-                
                 # print the disconnected memories
                 self.logger.info(f"Disconnected memories: {disconnected_memories}")
-
                 # Log the cleanup event
                 self.logger.log({
                     'event': 'dmn_memory_cleanup',
@@ -553,12 +511,14 @@ class DMNProcessor:
 
     def set_mode(self, mode):
         """Update DMN parameters based on mode."""
-        if mode in self.modes:
-            params = self.modes[mode]
-            self.combination_threshold = params["combination_threshold"]
-            self.similarity_threshold = params["similarity_threshold"]
-            self.decay_rate = params["decay_rate"]
-            self.top_k = params["top_k"]
-            self.fuzzy_overlap_threshold = params["fuzzy_overlap_threshold"]
-            self.fuzzy_search_threshold = params["fuzzy_search_threshold"]
-        
+        m = {k.lower(): k for k in self.modes}
+        key = str(mode).strip().lower()
+        if key not in m:
+            raise ValueError(f"unknown mode: {mode}")
+        p = self.modes[m[key]]
+        self.combination_threshold = float(p["combination_threshold"])
+        self.similarity_threshold = float(p["similarity_threshold"])
+        self.decay_rate = float(p["decay_rate"])
+        self.top_k = int(p["top_k"])
+        self.fuzzy_overlap_threshold = int(p["fuzzy_overlap_threshold"])
+        self.fuzzy_search_threshold = int(p["fuzzy_search_threshold"])

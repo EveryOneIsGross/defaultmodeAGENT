@@ -1,4 +1,4 @@
-aiohttp==3.10.11
+aiohttp==3.12.14
 anthropic==0.45.2
 colorama==0.4.6
 discord.py==2.4.0
@@ -16,6 +16,7 @@ python-dotenv==1.0.1
 PyYAML==6.0.2
 tiktoken==0.8.0
 uvicorn==0.34.0
+click==8.1.7
 beautifulsoup4==4.12.3
 yt-dlp==2025.5.22
 google-genai==1.21.1

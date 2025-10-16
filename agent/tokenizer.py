@@ -31,3 +31,19 @@ def decode_tokens(tokens, **kwargs):
 def count_tokens(text: str) -> int:
     """Count tokens in text using the global tokenizer."""
     return len(encode_text(text))
+
+def calculate_image_tokens(width: int, height: int):
+    """
+    Calculate image tokens using OpenAI's vision API formula.
+    Adapted from https://community.openai.com/t/how-do-i-calculate-image-tokens-in-gpt4-vision/492318/2 
+    """
+    # Compute number of 512x512 tiles that can fit into the image
+    tiles_width = -(-width // 512)  # Ceiling division without importing math
+    tiles_height = -(-height // 512)  # Ceiling division without importing math
+
+    # See https://platform.openai.com/docs/guides/vision/calculating-costs
+    #   - 85 is the "base token" that will always be added
+    #   - 1 tiles = 170 tokens 
+    total_tokens = 85 + 170 * (tiles_width * tiles_height)
+    
+    return total_tokens

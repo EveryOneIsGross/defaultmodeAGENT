@@ -38,7 +38,21 @@ def remove_consecutive_duplicates(text):
     pattern = r'\b(\w+)\b(\s+\1\b)+'
     return re.sub(pattern, r'\1', text)
 
-def chronomic_filter(text, alpha=0.3, beta=3.0):
+'''
+  # Light compression (current defaults)
+  python chronpression.py -a 0.3 -b 3.0
+
+  # Medium compression
+  python chronpression.py -a 0.2 -b 4.0
+
+  # Heavy compression
+  python chronpression.py -a 0.1 -b 6.0
+
+  # Maximum compression
+  python chronpression.py -a 0.05 -b 10.0
+'''
+
+def chronomic_filter(text, alpha=0.1, beta=6.0):
     """
     Process text using a bimodal significance model.
     
@@ -112,8 +126,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Chronomic Text Compression Tool")
     parser.add_argument("-i", "--input", help="Input file path to process")
     parser.add_argument("-o", "--output", help="Output file path (default: input_compressed.ext)")
-    parser.add_argument("-a", "--alpha", type=float, default=0.3, help="Alpha threshold (default: 0.3)")
-    parser.add_argument("-b", "--beta", type=float, default=3.0, help="Beta threshold (default: 3.0)")
+    parser.add_argument("-a", "--alpha", type=float, default=0.1, help="Alpha threshold (default: 0.3)")
+    parser.add_argument("-b", "--beta", type=float, default=6.0, help="Beta threshold (default: 3.0)")
     args = parser.parse_args()
     
     if args.input:

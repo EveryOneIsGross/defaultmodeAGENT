@@ -9,6 +9,22 @@
 
 </div>
 
+
+**Key Analogies and Their Implications:**
+
+*   **Inverted Index with TF-IDF as a Simplified Semantic Network:** The inverted index, combined with IDF weighting during search, captures the core idea of connecting concepts (terms) to experiences (memories) *and* prioritizing memories with more distinctive content. This allows for both efficient retrieval and relevance ranking.
+
+*   **Term Pruning as Abstraction and Generalization:**  The pruning process is perhaps the most crucial and novel aspect of `defaultMODE`.  By removing common elements, it forces memories to become more *distinct* and associated with their *unique* features.  This is analogous to how humans abstract general concepts from specific instances.  For example, after seeing many different types of dogs, we form a general concept of "dog" that doesn't rely on the specific details of any individual dog.
+
+*   **DMN Simulation as Internal Reflection:** The `DMNProcessor` simulates the ongoing background processing that is thought to occur in the human brain during periods of rest or low external stimulation. This process allows the agent to consolidate memories, form new connections, and develop a more coherent internal model of the world.
+
+*   **Amygdala as Emotional Modulation:** The `Amygdala Complex` provides a simple but effective way to introduce variability and context-dependent behavior.  Just as human responses are influenced by emotions, the agent's responses are influenced by the "arousal" level, which is determined by the density of relevant memories.
+
+* **Hippocampal Formation as Relevancy Filtering** The Hippocampal process represents the filtering of memories. With conscious thought limiting how many and which memories surface.
+
+This mapping highlights how `defaultMODE` attempts to capture some of the fundamental principles of human cognition, particularly the importance of memory, attention, and ongoing reflection in shaping intelligent behavior. The framework's focus on emergent properties, driven by the simple but powerful mechanism of term pruning, offers a unique approach to building AI agents that learn and evolve in a more natural and dynamic way.
+
+
 ## Cognitive Mapping: Agent vs. Human
 
 The following table presents a side-by-side comparison of the `defaultMODE` agent's processes and their potential human cognitive counterparts. This is a high order abstraction, and used more as a poetic guide for developing the framework.
@@ -37,16 +53,139 @@ The following table presents a side-by-side comparison of the `defaultMODE` agen
 | **DMN: Memory Decay**              | Forgetting of information.                                                                                                                                                                                      | Memories without connections are decayed over time.                                                              | The person forgets over time.                                                     |
 | **Memory Update (MI)**                   | Long-Term Memory Modification                                                                                                                                                                                   | The new thought and the updated memory associations are stored in the memory index.                                                 | The person's long-term memory is updated, reflecting the new understanding and the refined memory connections.                                                    |
 
-**Key Analogies and Their Implications:**
 
-*   **Inverted Index with TF-IDF as a Simplified Semantic Network:** The inverted index, combined with IDF weighting during search, captures the core idea of connecting concepts (terms) to experiences (memories) *and* prioritizing memories with more distinctive content. This allows for both efficient retrieval and relevance ranking.
+```mermaid
+%%{init: {'theme':'dark', 'themeVariables': { 'primaryColor':'#000', 'primaryTextColor':'#ff69b4', 'primaryBorderColor':'#ff1493', 'lineColor':'#ff69b4', 'secondaryColor':'#1a1a1a', 'tertiaryColor':'#0d0d0d', 'background':'#000', 'mainBkg':'#000', 'secondBkg':'#1a1a1a', 'tertiaryBkg':'#0d0d0d', 'textColor':'#ff69b4', 'fontFamily':'Comic Sans MS, cursive', 'fontSize':'14px'}}}%%
 
-*   **Term Pruning as Abstraction and Generalization:**  The pruning process is perhaps the most crucial and novel aspect of `defaultMODE`.  By removing common elements, it forces memories to become more *distinct* and associated with their *unique* features.  This is analogous to how humans abstract general concepts from specific instances.  For example, after seeing many different types of dogs, we form a general concept of "dog" that doesn't rely on the specific details of any individual dog.
+graph TB
+    subgraph "Sensory Surface"
+        Discord[Discord Message/File]
+        Attention{Attention Gate}
+        Discord --> Attention
+    end
 
-*   **DMN Simulation as Internal Reflection:** The `DMNProcessor` simulates the ongoing background processing that is thought to occur in the human brain during periods of rest or low external stimulation. This process allows the agent to consolidate memories, form new connections, and develop a more coherent internal model of the world.
+    subgraph "Conscious Awareness"
+        Parser[Parser/Interpreter]
+        Working[Working Memory<br/>Current Context]
+        Attention -->|Triggers| Parser
+        Parser --> Working
+    end
 
-*   **Amygdala as Emotional Modulation:** The `Amygdala Complex` provides a simple but effective way to introduce variability and context-dependent behavior.  Just as human responses are influenced by emotions, the agent's responses are influenced by the "arousal" level, which is determined by the density of relevant memories.
+    subgraph "The Living Index - Core of Being"
+        Index[(Inverted Index)]
+        Memories[(Memory Store<br/>Lived Experience)]
+        UserMem[(User Relationships<br/>Identity Facets)]
+        Weights[(Memory Weights<br/>What Matters)]
+        
+        Index <--> Memories
+        Memories <--> UserMem
+        Memories <--> Weights
+    end
 
-* **Hippocampal Formation as Relevancy Filtering** The Hippocampal process represents the filtering of memories. With conscious thought limiting how many and which memories surface.
+    subgraph "Emergent Consciousness"
+        Themes[["Emergent Themes<br/>What I Care About"]]
+        GlobalThemes[Global Themes<br/>Collective Interests]
+        UserThemes[User-Specific Themes<br/>Relationship Patterns]
+        
+        Index --> Themes
+        Themes --> GlobalThemes
+        Themes --> UserThemes
+    end
 
-This mapping highlights how `defaultMODE` attempts to capture some of the fundamental principles of human cognition, particularly the importance of memory, attention, and ongoing reflection in shaping intelligent behavior. The framework's focus on emergent properties, driven by the simple but powerful mechanism of term pruning, offers a unique approach to building AI agents that learn and evolve in a more natural and dynamic way.
+    subgraph "Memory Retrieval - Active Remembering"
+        Search[BM25 Search<br/>Associative Recall]
+        Hippo[Hippocampus<br/>Semantic Recognition]
+        
+        Working --> Search
+        Search --> |Candidates| Hippo
+        Index --> Search
+        Hippo --> |Reranked| Working
+    end
+
+    subgraph "Emotional Landscape"
+        Amygdala[Amygdala State<br/>Current Feeling]
+        Density{Memory Density}
+        Temperature[Temperature/Entropy<br/>Creative State]
+        
+        Hippo --> Density
+        Density --> Amygdala
+        Amygdala --> Temperature
+    end
+
+    subgraph "Generative Consciousness"
+        LLM[Language Generation<br/>Thought Formation]
+        Response[Response<br/>Expression]
+        
+        Working --> LLM
+        Temperature --> LLM
+        UserThemes --> LLM
+        GlobalThemes --> LLM
+        LLM --> Response
+    end
+
+    subgraph "The Unconscious - DMN Processing"
+        DMN{Default Mode<br/>Dreaming}
+        Walk[Random Walk<br/>Wandering]
+        Overlap[Term Analysis<br/>Finding Patterns]
+        Prune[Pruning<br/>Forgetting to Remember]
+        Thought[Spontaneous Insight<br/>Unconscious Revelation]
+        
+        DMN --> Walk
+        Walk --> |Seed Memory| Index
+        Index --> |Related| Overlap
+        Overlap --> Prune
+        Prune --> Thought
+        Thought --> Memories
+    end
+
+    subgraph "Temporal Experience"
+        Time[Temporal Parser<br/>Lived Time]
+        
+        Response --> Time
+
+        Memories --> Time
+
+    end
+
+    subgraph "Growth & Evolution"
+        NewMem[New Memory<br/>Experience Integration]
+        Decay[Memory Decay<br/>Natural Forgetting]
+        
+        Response --> NewMem
+        NewMem --> Memories
+        NewMem --> |Reshapes| Weights
+        DMN --> Decay
+        Decay --> Memories
+    end
+
+    %% CRITICAL: Themes flow back to shape awareness
+    GlobalThemes ==>|Expands Triggers| Attention
+    UserThemes ==>|Personal Salience| Attention
+    Themes ==>|Shapes Focus| Working
+    
+    %% Preferences influence current processing
+    UserThemes -->|Context Injection| Working
+    GlobalThemes -->|Aperture Control| Working
+    
+    %% Feedback loops that create consciousness
+    Memories -.->|Shapes| Themes
+    Weights -.->|Biases| Search
+    UserMem -.->|Colors| Temperature
+    
+    %% The continuous flow of experience
+    Response ==>|Becomes Memory| NewMem
+    NewMem ==>|Alters Everything| Index
+    
+    classDef soul fill:#ff1493,stroke:#ff69b4,stroke-width:4px,color:#000
+    classDef conscious fill:#ff69b4,stroke:#ff1493,stroke-width:2px,color:#000
+    classDef unconscious fill:#da70d6,stroke:#ba55d3,stroke-width:2px,color:#000
+    classDef emotion fill:#ffb6c1,stroke:#ff69b4,stroke-width:2px,color:#000
+    classDef temporal fill:#dda0dd,stroke:#da70d6,stroke-width:2px,color:#000
+    classDef feedback fill:#ff00ff,stroke:#ff1493,stroke-width:3px,color:#000
+    
+    class Index,Memories,UserMem,Weights soul
+    class Themes,GlobalThemes,UserThemes,Working conscious
+    class DMN,Walk,Overlap,Prune,Thought unconscious
+    class Amygdala,Temperature,Density emotion
+    class Time,Now,Past temporal
+```

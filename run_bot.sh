@@ -53,11 +53,25 @@ handle_ollama() {
     
     read -p "Enter model name (or press Enter for default): " model
     
-    if [ -z "$model" ]; then
-        python agent/discord_bot.py --api ollama --bot-name "$bot_name"
-    else
-        python agent/discord_bot.py --api ollama --model "$model" --bot-name "$bot_name"
+    # Ask for DMN settings
+    echo ""
+    echo "DMN (Background Thought Generation) Settings:"
+    read -p "Enter DMN API type (ollama/openai/anthropic/vllm/gemini or Enter for main API): " dmn_api
+    read -p "Enter DMN model name (or press Enter for main model): " dmn_model
+    
+    # Build command with DMN options
+    cmd="python agent/discord_bot.py --api ollama --bot-name \"$bot_name\""
+    if [ -n "$model" ]; then
+        cmd="$cmd --model \"$model\""
     fi
+    if [ -n "$dmn_api" ]; then
+        cmd="$cmd --dmn-api \"$dmn_api\""
+    fi
+    if [ -n "$dmn_model" ]; then
+        cmd="$cmd --dmn-model \"$dmn_model\""
+    fi
+    
+    eval $cmd
 }
 
 # Function to handle other API selections
@@ -68,11 +82,25 @@ handle_api() {
     echo "Selected: $api_name"
     read -p "Enter model name (or press Enter for default): " model
     
-    if [ -z "$model" ]; then
-        python agent/discord_bot.py --api "$api_name" --bot-name "$bot_name"
-    else
-        python agent/discord_bot.py --api "$api_name" --model "$model" --bot-name "$bot_name"
+    # Ask for DMN settings
+    echo ""
+    echo "DMN (Background Thought Generation) Settings:"
+    read -p "Enter DMN API type (ollama/openai/anthropic/vllm/gemini or Enter for main API): " dmn_api
+    read -p "Enter DMN model name (or press Enter for main model): " dmn_model
+    
+    # Build command with DMN options
+    cmd="python agent/discord_bot.py --api \"$api_name\" --bot-name \"$bot_name\""
+    if [ -n "$model" ]; then
+        cmd="$cmd --model \"$model\""
     fi
+    if [ -n "$dmn_api" ]; then
+        cmd="$cmd --dmn-api \"$dmn_api\""
+    fi
+    if [ -n "$dmn_model" ]; then
+        cmd="$cmd --dmn-model \"$dmn_model\""
+    fi
+    
+    eval $cmd
 }
 
 # Main function

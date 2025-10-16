@@ -203,6 +203,13 @@ input, textarea, select {
     align-items: center;
     gap: 4px;
     border: 1px solid var(--butt-black);
+    font-family: "Courier New", Courier, monospace;
+    text-shadow:
+        -1px -1px 0 var(--butt-pink),
+         1px -1px 0 var(--butt-pink),
+        -1px  1px 0 var(--butt-pink),
+         1px  1px 0 var(--butt-pink);
+    
 }
 
 .weight {
