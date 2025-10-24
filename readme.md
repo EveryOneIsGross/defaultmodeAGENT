@@ -6,7 +6,10 @@
 
 # defaultMODE: Emergent Self-Regulating AI Entities
 
-`defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time, by focusing on at inference-time *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. The emphasis is on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. Most multi-turn/multi-user bots exhibit confusion about their role and reward signals over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context is a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing. 💀
+`defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time; at inference-time *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. Focused on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. 
+
+A local-first framework for ALL models, where attention, memory, and emotion weave a self-regulating mind that can dream, decay, and persist.
+
 
 [UPDATES](docs/updates.md)
 
@@ -198,6 +201,10 @@ The name refers to the human Default Mode Network (DMN)—brain regions active d
 
 ---
 
+*Currently multi-turn/multi-user bots often exhibit confusion about their role and intent over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context is a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing.  💀
+
+---
+
 <div align="center">
 
 <img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;">
@@ -223,7 +230,7 @@ The name refers to the human Default Mode Network (DMN)—brain regions active d
 
 **Technical Overview**
 
-*   **Persistence:** Memories are persisted using a bespoke inverted-index, ensuring data is preserved between sessions and can be all held in memory for fast inference.
+*   **Persistence:** Memories are persisted using a pickled inverted-index, ensuring data is preserved between sessions and can be all held in memory for fast inference.
 *   **Analysis:** JSONL logs and an SQLite database are included for auditing and analysis.
 *   **Configuration:** Managed via YAML files for prompt definitions and environment variables for sensitive credentials and API keys.
 *   **Code:** Python, with an emphasis on tool modularity. Abstractions will transfer to other social platforms eventually.

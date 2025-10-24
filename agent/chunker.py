@@ -1,5 +1,5 @@
 import logging
-from tokenizer import get_tokenizer, encode_text, decode_tokens
+from tokenizer import get_tokenizer, encode_text, decode_tokens, count_tokens
 
 def truncate_middle(text, max_tokens=64):
     """
@@ -60,14 +60,14 @@ def truncate_middle(text, max_tokens=64):
         ellipsis_token = encode_text('...')
         truncated_tokens = tokens[:side_tokens] + ellipsis_token + tokens[-end_tokens:]
         result = decode_tokens(truncated_tokens)
-        
+
         # Ensure we haven't broken any markdown formatting
         if '```' in result:
             # Count occurrences of code block markers
             if result.count('```') % 2 != 0:
                 # Add closing code block if needed
                 result += '\n```'
-                
+
         return result
         
     except Exception as e:

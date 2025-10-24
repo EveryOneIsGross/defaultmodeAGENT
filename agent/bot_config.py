@@ -58,8 +58,8 @@ class PersonaConfig(BaseModel):
     hippocampus_bandwidth: float = Field(default=0.70) 
     memory_capacity: int = Field(default=24)
     use_hippocampus_reranking: bool = Field(default=True)
-    reranking_blend_factor: float = Field(default=0.50, description="Weight for blending initial search scores with reranking similarity (0-1)") 
-    minimum_reranking_threshold: float = Field(default=0.40, description="Minimum threshold for reranked memories") 
+    reranking_blend_factor: float = Field(default=0.20, description="Weight for blending initial search scores with reranking similarity (0-1)") 
+    minimum_reranking_threshold: float = Field(default=0.60, description="Minimum threshold for reranked memories") 
     mood_coefficient: float = Field(default=0.30, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
 
 class NotionConfig(BaseModel):
@@ -177,28 +177,17 @@ class DMNConfig(BaseModel):
 
 class EmbeddingConfig(BaseModel):
     """Pydantic model for embedding configuration."""
-    provider: str = Field(
-        default='ollama',
-        description="Provider for embedding service"
-    )
-    model: str = Field(
-        default='all-minilm:latest',  # Ollama's default embedding model
-        description="Specific model for embeddings"
-    )
-    api_base: str = Field(
-        default='http://localhost:11434',
-        description="Base URL for Ollama API"
-    )
-    dimensions: int = Field(
-        default=384,  
-        description="Expected embedding dimensions"
-    )
+    provider: str = Field( default='ollama', description="Provider for embedding service" )
+    model: str = Field( default='all-minilm', description="Specific model for embeddings" )
+    api_base: str = Field( default='http://localhost:11434', description="Base URL for Ollama API" )
+    max_embed_tokens: int = Field(default=160, description="Maximum tokens per embedding request")
+    dimensions: int = Field( default=384, description="Expected embedding dimensions" )
 
 class HippocampusConfig(BaseModel):
     """Pydantic model for Hippocampus configuration - provides vector embeddings for downstream search."""
     embedding_provider: str = Field(default='ollama', description="Provider for embedding service")
     embedding_model: str = Field(default='all-minilm:latest', description="Model to use for embeddings")
-    blend_factor: float = Field(default=0.6, description="Weight for blending initial search scores with embedding similarity (0-1)")
+    blend_factor: float = Field(default=0.7, description="Weight for blending initial search scores with embedding similarity (0-1)")
 
 class DiscordConfig(BaseModel):
     """Discord-specific configuration"""
@@ -206,31 +195,9 @@ class DiscordConfig(BaseModel):
     bot_manager_role: str = Field(default='Ally')
     
     # Command permission groups - properly tiered
-    system_commands: Set[str] = Field(default={
-        'kill',
-        'resume',
-        'get_logs',
-        'dmn',
-        'mentions',
-        'persona',
-        'search_memories'
-
-    })
-    
-    management_commands: Set[str] = Field(default={
-        'add_memory',
-        'index_repo',
-        'reranking',
-        'clear_memories',
-        'attention'
-    })
-    
-    general_commands: Set[str] = Field(default={
-        'summarize',
-        'ask_repo',
-        'repo_file_chat',
-        'analyze_file'
-    })
+    system_commands: Set[str] = Field(default={ 'kill', 'resume', 'get_logs', 'dmn', 'mentions', 'persona', 'search_memories' })
+    management_commands: Set[str] = Field(default={ 'add_memory', 'index_repo', 'reranking', 'clear_memories', 'attention' })
+    general_commands: Set[str] = Field(default={ 'summarize', 'ask_repo', 'repo_file_chat', 'analyze_file' })
 
     def has_command_permission(self, command_name: str, ctx) -> bool:
         """Check if user has permission to use a command.

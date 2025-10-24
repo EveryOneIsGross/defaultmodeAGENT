@@ -262,12 +262,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                     threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH - (MOOD_COEFF * amygdala_scale))  # Fixed: subtract amygdala influence
                     bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * amygdala_scale:.3f})")
                     # Rerank memories with blended weights
-                    relevant_memories = await hippocampus.rerank_memories(
-                        query=search_query,  
-                        memories=candidate_memories,
-                        threshold=threshold,
-                        blend_factor=config.persona.reranking_blend_factor
-                    )
+                    relevant_memories = await hippocampus.rerank_memories( query=search_query, memories=candidate_memories, threshold=threshold, blend_factor=config.persona.reranking_blend_factor )
+
                     bot.logger.info(f"Reranked memories: {relevant_memories}")
                     # Log the memories that passed the threshold
                     bot.logger.info(f"Found {len(relevant_memories)} memories above threshold {threshold:.3f}:")

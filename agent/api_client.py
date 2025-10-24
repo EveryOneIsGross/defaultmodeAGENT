@@ -417,21 +417,40 @@ async def _call_gemini(content,*,system_prompt,context,temperature,top_p,frequen
 
 
 # ─────────────────────── embeddings helper (unchanged) ────────────────────
-async def get_embeddings(text: str,
+async def get_embeddings(text: str | list[str],
                          provider: str | None = None,
-                         model: str | None = None):
+                         model: str | None = None,
+                         max_tokens: int = 256):
+    """Get embeddings with automatic truncation to fit model context limits.
+
+    Args:
+        text: Single text string or list of texts to embed
+        provider: API provider (openai, ollama, vllm)
+        model: Specific model name
+        max_tokens: Maximum tokens per text (default 256, conservative for most embedding models)
+    """
+    # Truncate text to fit within model limits (conservative char estimate)
+    # Use 3 chars/token as conservative estimate for BERT-based models
+    max_chars = max_tokens * 3
+
+    if isinstance(text, str):
+        if len(text) > max_chars:
+            text = text[:max_chars // 2] + "..." + text[-max_chars // 2:]
+    else:
+        text = [t[:max_chars // 2] + "..." + t[-max_chars // 2:] if len(t) > max_chars else t for t in text]
+
     provider = provider or api.api_type
     if provider == "openai":
         client = openai.AsyncOpenAI(api_key=_require_env("OPENAI_API_KEY"))
         model  = model or "text-embedding-3-small"
         res = await client.embeddings.create(model=model, input=text)
-        return res.data[0].embedding
+        return res.data[0].embedding if isinstance(text, str) else [d.embedding for d in res.data]
     if provider == "ollama":
         client = openai.AsyncOpenAI(base_url=f"{api.api_base}/v1",
                                     api_key="ollama")
         model = model or "all-minilm:latest"
         res = await client.embeddings.create(model=model, input=text)
-        return res.data[0].embedding
+        return res.data[0].embedding if isinstance(text, str) else [d.embedding for d in res.data]
     if provider == "vllm":
         model = model or os.getenv("VLLM_EMBED_MODEL",
                                    "jinaai/jina-embeddings-v2-base-en")
