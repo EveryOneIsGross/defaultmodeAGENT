@@ -354,3 +354,43 @@ async def scrape_webpage(url: str) -> dict:
     except Exception:  # pragma: no cover
         logging.exception("Scraping failed for %s", url)
         return partial_result(description="Unexpected scraping error")
+
+
+# ---------------------------------------------------------------------------
+# CLI mainloop
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Scrape and parse websites to console")
+    parser.add_argument("url", help="URL to scrape")
+    parser.add_argument("--full", action="store_true", help="Show full content (default: preview only)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+
+    args = parser.parse_args()
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+    # Run scraper
+    result = asyncio.run(scrape_webpage(args.url))
+
+    # Display results
+    print(f"URL:          {result['url']}")
+    print(f"Title:        {result['title']}")
+    print(f"Description:  {result['description']}")
+    print(f"Content Type: {result['content_type']}")
+    print(f"Tokens:       {count_tokens(result['content'])}")
+    print("\n" + "=" * 80)
+
+    if args.full:
+        print(result['content'])
+    else:
+        # Show preview
+        preview = result['content'][:1000]
+        print(preview)
+        if len(result['content']) > 1000:
+            print(f"\n... (use --full to see all {len(result['content'])} characters)")

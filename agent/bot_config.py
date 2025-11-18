@@ -12,13 +12,16 @@ if os.path.exists('.env'):
 
 class LogConfig(BaseModel):
     """Logging configuration and paths"""
-    base_log_dir: str = Field(default="logs")  # Simple flat directory
+    base_log_dir: str = Field(default="cache")
     jsonl_pattern: str = Field(default="bot_log_{bot_id}.jsonl")
     db_pattern: str = Field(default="bot_log_{bot_id}.db")
     log_level: str = Field(default=os.getenv('LOGLEVEL', 'INFO'))
     log_format: str = Field(default='%(asctime)s - %(levelname)s - %(message)s')
+
+    enable_console: bool = Field(default=True, description="Enable console logging")
     enable_jsonl: bool = Field(default=True, description="Enable JSONL file logging")
     enable_sql: bool = Field(default=False, description="Enable SQLite database logging")
+
 
 class APIConfig(BaseModel):
     """API authentication and endpoint configurations"""
@@ -34,8 +37,6 @@ class FileConfig(BaseModel):
     """File handling configuration"""
     allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
     allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
-    # add audio extension for voice message module expansion
-    allowed_audio_extensions: Set[str] = Field(default={'.mp3', '.wav', '.ogg', '.m4a'})
 
 class SearchConfig(BaseModel):
     """Search and indexing configuration"""
@@ -56,11 +57,11 @@ class PersonaConfig(BaseModel):
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
     hippocampus_bandwidth: float = Field(default=0.70) 
-    memory_capacity: int = Field(default=24)
+    memory_capacity: int = Field(default=30)
     use_hippocampus_reranking: bool = Field(default=True)
-    reranking_blend_factor: float = Field(default=0.20, description="Weight for blending initial search scores with reranking similarity (0-1)") 
-    minimum_reranking_threshold: float = Field(default=0.60, description="Minimum threshold for reranked memories") 
-    mood_coefficient: float = Field(default=0.30, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
+    reranking_blend_factor: float = Field(default=0.5, description="Weight for blending initial search scores with reranking similarity (0-1)") 
+    minimum_reranking_threshold: float = Field(default=0.64, description="Minimum threshold for reranked memories") 
+    mood_coefficient: float = Field(default=0.15, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
 
 class NotionConfig(BaseModel):
     """Notion database configuration"""
@@ -69,22 +70,6 @@ class NotionConfig(BaseModel):
     tasks_db_id: str = Field(default=os.getenv('TASKS_DB_ID'))
     kanban_db_id: str = Field(default=os.getenv('KANBAN_DB_ID'))
 
-class TwitterConfig(BaseModel):
-    """Twitter API and limits configuration"""
-    username: str = Field(default=os.getenv('TWITTER_USERNAME'))
-    api_key: str = Field(default=os.getenv('TWITTER_API_KEY'))
-    api_secret: str = Field(default=os.getenv('TWITTER_API_SECRET'))
-    access_token: str = Field(default=os.getenv('TWITTER_ACCESS_TOKEN'))
-    access_secret: str = Field(default=os.getenv('TWITTER_ACCESS_SECRET'))
-    bearer_token: str = Field(default=os.getenv('TWITTER_BEARER_TOKEN'))
-    char_limit: int = Field(default=280)
-    media_limit: int = Field(default=4)
-    gif_limit: int = Field(default=1)
-    video_limit: int = Field(default=1)
-    reply_depth_limit: int = Field(default=25)
-    tweet_rate_limit: int = Field(default=300)
-    dm_rate_limit: int = Field(default=1000)
-
 class SystemConfig(BaseModel):
     """System-wide configuration"""
     poll_interval: int = Field(default=int(os.getenv('POLL_INTERVAL', 120)))
@@ -92,10 +77,10 @@ class SystemConfig(BaseModel):
 
 class AttentionConfig(BaseModel):
     """Attention mechanism configuration"""
-    threshold: int = Field(default=70, description="Fuzzy match threshold for attention triggers (0-100)")
+    threshold: int = Field(default=60, description="Fuzzy match threshold for attention triggers (0-100)")
     default_top_n: int = Field(default=32, description="Default number of top trigrams to extract from memory")
     default_min_occ: int = Field(default=8, description="Minimum occurrence count for trigrams to be considered")
-    refresh_interval_hours: int = Field(default=1, description="Hours between trigram cache refreshes")
+    refresh_interval_hours: int = Field(default=2, description="Hours between trigram cache refreshes")
     cooldown_minutes: float = Field(default=0.30, description="Minutes between attention trigger activations")
 
     stop_words: Set[str] = Field(default_factory=lambda: {
@@ -133,6 +118,7 @@ class DMNConfig(BaseModel):
     """DMN configuration"""
     tick_rate: int = Field(default=1200, description="Time between thought generations in seconds")
     temperature: float = Field(default=0.7, description="Base creative temperature")
+    temperature_max: float = Field(default=1.5)
     combination_threshold: float = Field(default=0.2, description="Minimum relevance score for memory combinations")
     decay_rate: float = Field(default=0.1, description="Rate at which used memory weights decrease")
     top_k: int = Field(default=24, description="Top k memories to consider for combination")
@@ -141,13 +127,21 @@ class DMNConfig(BaseModel):
     fuzzy_search_threshold: int = Field(default=90, description="Minimum fuzzy search threshold for term matching")
     max_memory_length: int = Field(default=64, description="Maximum length of a memory based on truncate_middle function")
     similarity_threshold: float = Field(default=0.5, description="Minimum similarity score for memory relevance")
-    top_p_min_clamp: float = Field(default=0.8, description="Minimum clamp value for top_p scaling (0.0-1.0)")
-    
+
     # DMN-specific API settings
     dmn_api_type: str = Field(default=None, description="API type for DMN processor (ollama, openai, anthropic, etc.)")
     dmn_model: str = Field(default=None, description="Model name for DMN processor")
     
-    # Mode presets
+    # Focus presets
+    consciousness_default: str = Field(default="creative")
+    consciousness_presets: Dict[str, Dict[str, float]] = Field(default_factory=lambda:{
+        "hyperfocus": {"temp_base":0.20,"temp_span":0.40, "p_sparse":0.80, "p_mid":0.65, "p_dense":0.50},      # low T + low p
+        "creative":   {"temp_base":0.80,"temp_span":0.70,"p_sparse":0.92,"p_mid":0.90,"p_dense":0.88},      # high T + low p
+        "drowsy":     {"temp_base":0.30,"temp_span":0.20,"p_sparse":0.99,"p_mid":0.985,"p_dense":0.98},     # low T + high p
+        "dream":      {"temp_base":0.90,"temp_span":0.80,"p_sparse":0.99,"p_mid":0.99,"p_dense":0.985}      # high T + high p
+    })
+
+    # Memory presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
         "forgetful": {
             "combination_threshold": 0.02,
@@ -262,7 +256,6 @@ class BotConfig(BaseModel):
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     notion: NotionConfig = Field(default_factory=NotionConfig)
-    twitter: TwitterConfig = Field(default_factory=TwitterConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     logging: LogConfig = Field(default_factory=LogConfig)
     attention: AttentionConfig = Field(default_factory=AttentionConfig)

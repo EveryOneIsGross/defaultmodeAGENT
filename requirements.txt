@@ -20,3 +20,6 @@ click==8.1.7
 beautifulsoup4==4.12.3
 yt-dlp==2025.5.22
 google-genai==1.21.1
+
+# optional for ./utils/visualise_pickles.py
+umap-learn==0.5.4
