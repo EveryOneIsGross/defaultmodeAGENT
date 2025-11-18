@@ -51,8 +51,6 @@ class DMNProcessor:
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
         # Search similarity settings
         self.similarity_threshold = dmn_config.similarity_threshold
-        # Top-p scaling settings
-        self.top_p_min_clamp = dmn_config.top_p_min_clamp
         # Store modes from config
         self.modes = dmn_config.modes
         # Set initial mode
@@ -60,7 +58,15 @@ class DMNProcessor:
         # DMN-specific API settings
         self.dmn_api_type = dmn_api_type
         self.dmn_model = dmn_model
+        # Consciousness settings
+        self.temperature_max=dmn_config.temperature_max
+        self.consciousness_state=dmn_config.consciousness_default
+        self.consciousness_presets=dmn_config.consciousness_presets
+
         self.logger.info(f"DMN Processor initialized with API: {dmn_api_type or 'default'}, Model: {dmn_model or 'default'}")
+
+    def set_consciousness(self,name:str): 
+        if name in self.consciousness_presets: self.consciousness_state=name
 
     async def start(self):
         """Start the DMN processing loop."""
@@ -327,22 +333,25 @@ class DMNProcessor:
         else:
             # Default to max intensity if top_k is 0 (edge case)
             # Corresponds to density = 0 in the formula
+            density = 0.0
             intensity_multiplier = 1.0 
             
         # Calculate final intensity using the exact original clamping/scaling
         new_intensity = min(100, max(0, int(100 * intensity_multiplier)))
-        # Update both DMN and global state
-        self.amygdala_response = new_intensity
-        self.temperature = new_intensity / 100.0
-        self.bot.amygdala_response = new_intensity  # Update bot's amygdala arousal
-        # Update bot's private API temperature (not global)
-        self.bot.update_api_temperature(new_intensity)
-        # Update top_p with inverse scaling using same intensity value
-        # High temp (sparse) -> high top_p (diverse), Low temp (dense) -> low top_p (focused)
-        top_p_value = max(self.top_p_min_clamp, new_intensity / 100.0)
+        # intensity already computed above as new_intensity and density already computed
+        self.amygdala_response=new_intensity
+        I=new_intensity/100.0
+        self.temperature=0.3+I
+        self.bot.amygdala_response=new_intensity
+        # Convert intensity to temperature before passing to API client
+        self.bot.update_api_temperature(self.temperature)
+
+        top_p_value=0.98 if density<.33 else 0.95 if density<.66 else 0.92
         self.bot.update_api_top_p(top_p_value)
+
         self.logger.info(f"Updated bot amygdala arousal to {new_intensity} based on memory density")
-        self.logger.info(f"Updated bot top_p to {top_p_value:.2f} (inverse density scaling)")
+        self.logger.info(f"Updated bot top_p to {top_p_value:.2f} (banded density mapping)")
+
         system_prompt = self.system_prompts['dmn_thought_generation'].replace(
             '{amygdala_response}',
             str(self.amygdala_response)
@@ -423,7 +432,8 @@ class DMNProcessor:
                         # Use user-specific weight decay
                         self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
                         #self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
-                self.memory_index.save_cache()
+                #self.memory_index.save_cache()
+                self.memory_index._saver.request()
                 self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
 
             # Add cleanup here after new memory addition and weight updates
@@ -455,59 +465,34 @@ class DMNProcessor:
             })
 
     def _cleanup_disconnected_memories(self):
-        """Remove memories that have no keyword associations in the inverted index."""
-        # Get all memory IDs that appear in the inverted index
-        connected_memories = set()
-        for term_memories in self.memory_index.inverted_index.values():
-            connected_memories.update(term_memories)
-        # Find disconnected memories for each user
-        for user_id, memories in list(self.memory_index.user_memories.items()):
-            disconnected = sorted([mid for mid in memories if mid not in connected_memories], reverse=True)
-            if disconnected:
-                # Remove disconnected memories from weights
-                for memory_id in disconnected:
-                    if memory_id in self.memory_weights[user_id]:
-                        del self.memory_weights[user_id][memory_id]
-                # Remove from main memories list and adjust indices
-                for memory_id in disconnected:
-                    self.memory_index.memories.pop(memory_id)
-                    # Update all higher indices in user_memories
-                    for uid, mems in self.memory_index.user_memories.items():
-                        self.memory_index.user_memories[uid] = [
-                            mid if mid < memory_id else mid - 1 
-                            for mid in mems 
-                            if mid != memory_id
-                        ]
-                    
-                    # Update inverted index
-                    for word in list(self.memory_index.inverted_index.keys()):
-                        self.memory_index.inverted_index[word] = [
-                            mid if mid < memory_id else mid - 1 
-                            for mid in self.memory_index.inverted_index[word] 
-                            if mid != memory_id
-                        ]
-                        # Clean up empty word entries
-                        if not self.memory_index.inverted_index[word]:
-                            del self.memory_index.inverted_index[word]
-                
-                # Remove users with no memories left
-                if not self.memory_index.user_memories[user_id]:
-                    del self.memory_index.user_memories[user_id]
-                # print the disconnected memories
-                self.logger.info(f"Cleaned up {len(disconnected)} disconnected memories for user {user_id}")
-                #format the disconnected memories for logging
-                disconnected_memories = [self.memory_index.memories[mid] for mid in disconnected]
-                # Save the cleaned up state
-                self.memory_index.save_cache()
-                # print the disconnected memories
-                self.logger.info(f"Disconnected memories: {disconnected_memories}")
-                # Log the cleanup event
-                self.logger.log({
-                    'event': 'dmn_memory_cleanup',
-                    'timestamp': datetime.now().isoformat(),
-                    'user_id': user_id,
-                    'disconnected_memories': disconnected_memories
-                })
+        connected=set(); [connected.update(v) for v in self.memory_index.inverted_index.values()]
+        for uid,mems in list(self.memory_index.user_memories.items()):
+            disc=sorted([i for i in mems if i not in connected])
+            if not disc: continue
+            texts=[self.memory_index.memories[i] for i in disc]
+            removed=set(disc)
+            old_mem=self.memory_index.memories
+            self.memory_index.memories=[m for i,m in enumerate(old_mem) if i not in removed]
+            def remap(i):
+                c=0
+                for d in disc:
+                    if d<i: c+=1
+                    else: break
+                return i-c
+            for u,ls in list(self.memory_index.user_memories.items()):
+                new_ls=[remap(i) for i in ls if i not in removed]
+                if new_ls: self.memory_index.user_memories[u]=new_ls
+                else: self.memory_index.user_memories.pop(u,None)
+            for w,ls in list(self.memory_index.inverted_index.items()):
+                nl=[remap(i) for i in ls if i not in removed]
+                if nl: self.memory_index.inverted_index[w]=nl
+                else: self.memory_index.inverted_index.pop(w,None)
+            for u,weights in list(self.memory_weights.items()):
+                self.memory_weights[u]={remap(k):v for k,v in weights.items() if k not in removed}
+            self.logger.info(f"Cleaned up {len(disc)} disconnected memories for user {uid}")
+            self.logger.info(f"Disconnected memories: {texts}")
+            self.logger.log({'event':'dmn_memory_cleanup','timestamp':datetime.now().isoformat(),'user_id':uid,'disconnected_memories':texts})
+
 
     def set_mode(self, mode):
         """Update DMN parameters based on mode."""

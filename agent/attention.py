@@ -26,6 +26,8 @@ def format_themes_for_prompt(mi,uid:str,spike:bool=False,k_user:int=12,k_global:
     if mode=="inline":return ", ".join(ut+gt)
     if mode=="tagged":return ", ".join([f"User:{t}" for t in ut]+[f"Bot:{t}" for t in gt])
     if mode=="sections":return f"Current User Preferences:\n{', '.join(ut)}\n\nYour Global Preferences:\n{', '.join(gt)}"
+    if mode=="just_user":return f"Current User Preferences:\n{', '.join(ut)}"
+    if mode=="just_global":return f"Your Global Preferences:\n{', '.join(gt)}"
     return "\n".join([*map(lambda x:f"- U:{x}",ut),*map(lambda x:f"- G:{x}",gt)])
 
 

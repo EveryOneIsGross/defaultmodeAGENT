@@ -1,19 +1,20 @@
-chat_with_memory: '{context}
+chat_with_memory: |
+  {context}
 
   @{user_name}: {user_message}
 
-  '
-introduction: '{context}
+introduction: |
+  {context}
 
   @{user_name}: {user_message}
 
-  '
-introduction_web: '{context}
+introduction_web: |
+  {context}
 
   @{user_name}: {user_message}
 
-  '
-analyze_code: '{context}
+analyze_code: |
+  {context}
 
   <code>
 
@@ -23,18 +24,18 @@ analyze_code: '{context}
 
   @{user_name}: {user_message}
 
-  '
-summarize_channel: 'Channel: {channel_name}
+summarize_channel: |
+  Channel: {channel_name}
 
   {channel_history}
 
-  '
-ask_repo: '{context}
+ask_repo: |
+  {context}
 
   {question}
 
-  '
-repo_file_chat: '{context}
+repo_file_chat: |
+  {context}
 
   File: {file_path}
 
@@ -46,22 +47,20 @@ repo_file_chat: '{context}
 
   Task: {user_task_description}
 
-  '
-generate_thought: 'Memory about @{user_name}: {memory_text}
+generate_thought: |
+  Memory about @{user_name}: {memory_text}
 
   Timestamp: {timestamp}
 
-  {conversation_context}
-
-  '
-analyze_image: '{context}
+analyze_image: |
+  {context}
 
   Image: {filename}
 
   @{user_name}: {user_message}
 
-  '
-analyze_file: '{context}
+analyze_file: |
+  {context}
 
   File: {filename}
 
@@ -71,8 +70,8 @@ analyze_file: '{context}
 
   @{user_name}: {user_message}
 
-  '
-analyze_combined: '{context}
+analyze_combined: |
+  {context}
 
   Images:
 
@@ -84,4 +83,11 @@ analyze_combined: '{context}
 
   @{user_name}: {user_message}
 
-  '
+generate_dmn_thought: |
+  Review these memories you experienced with Other entities and your own actions in the discord server you are embodied in and generate a compressed summary or reflection that connects them in an interesting divergent way.
+
+  Current thought you are focused on from your interactions with @{user_name}:
+
+  {seed_memory}
+
+  {memory_text}

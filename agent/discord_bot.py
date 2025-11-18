@@ -48,7 +48,6 @@ from bot_config import (
     ConversationConfig,
     PersonaConfig,
     NotionConfig,
-    TwitterConfig,
     SystemConfig,
     BotConfig,
     init_logging
@@ -62,7 +61,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 _themes_ctx = contextvars.ContextVar('themes_ctx', default={})
 
-def format_themes_for_prompt_memoized(mi, uid, mode="sections"):
+def format_themes_for_prompt_memoized(mi, uid, mode="just_user"):
     d=_themes_ctx.get()
     k=(uid,mode)
     if k in d:return d[k]
@@ -190,37 +189,9 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             except (discord.NotFound, discord.Forbidden):
                 pass
 
-    
-    '''
-    # Process content and handle mentions
-    if is_command:
-        parts = message.content.split(maxsplit=1)
-        content = parts[1] if len(parts) > 1 else ""
-    else:
-        if message.guild and message.guild.me:
-            content = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
-        else:
-            content = message.content.strip()
-        # Add reply context for non-command messages
-        reply_context = None
-        if message.reference and not is_command:
-            try:
-                original = await message.channel.fetch_message(message.reference.message_id)
-                original_content = original.content.strip()
-                original_author = original.author.name
-                if original_content:
-                    # Use utilities for consistent mention handling
-                    for mention in original.mentions:
-                        original_content = original_content.replace(f'<@{mention.id}>', f'@{mention.name}')
-                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{mention.name}')
-                    for channel in original.channel_mentions:
-                        original_content = original_content.replace(f'<#{channel.id}>', f'#{channel.name}')
-                    reply_context = f"@{original_author}: {original_content}"
-                    content = f"[@{original_author} replying to @{original_author}: {original_content}]\n\n @{original_author}: {content}"
-            except (discord.NotFound, discord.Forbidden):
-                pass
-    '''
-    combined_mentions = list(message.mentions) + list(message.channel_mentions)
+    combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
+
+
     sanitized_content = sanitize_mentions(content, combined_mentions)
     #bot.logger.info(f"Received message from {user_name} (ID: {user_id}): {sanitized_content}")
     try:
@@ -232,7 +203,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != message.id:  # Skip the current message
                     clean_name = msg.author.name
-                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
+
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     conversation_context += f"@{clean_name}: {msg_content}\n"
             # Enhance search query with contextual information
@@ -316,7 +288,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != message.id:  # Skip the current message
                     clean_name = msg.author.name
-                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
+
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                     # Convert Discord timestamp (UTC) to local time, then to pipeline format
@@ -463,7 +436,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     # Standardize mention handling
     if message.guild and message.guild.me:
         user_message = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
-    combined_mentions = list(message.mentions) + list(message.channel_mentions)  
+    combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
+   
     user_message = sanitize_mentions(user_message, combined_mentions)
     bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
     try:
@@ -475,7 +449,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         context += "<conversation>\n"
         messages = []
         async for msg in message.channel.history(limit=MINIMAL_CONVERSATION_HISTORY):
-            combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+            #combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+            combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
             msg_content = sanitize_mentions(msg.content, combined_mentions)
             truncated_content = truncate_middle(msg_content, max_tokens=HARSH_TRUNCATION_LENGTH)
             author_name = msg.author.name
@@ -585,8 +560,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 # --- Save processed data to temp file --- 
                 if processed_as_image and data_to_save:
                     try:
-                        file_cache = bot.cache_managers['file']
-                        temp_path, file_id = file_cache.create_temp_file(
+                        temp_path, file_id = bot.cache.create_temp_file(
                             user_id=user_id,
                             prefix="img_",
                             suffix=os.path.splitext(attachment.filename)[1],
@@ -692,16 +666,8 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
             if image_files:
                 file_context += f"Images analyzed: {', '.join(image_files)}\n"
             def cleanup_temp_files():
-                if hasattr(bot, 'cache_managers') and 'file' in bot.cache_managers:
-                    bot.cache_managers['file'].cleanup_temp_files(force=True)
-                else:
-                    for temp_path in temp_paths:
-                        try:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                                bot.logger.info(f"Removed temporary file: {temp_path}")
-                        except Exception as e:
-                            bot.logger.error(f"Error removing temporary file {temp_path}: {str(e)}")
+                bot.cache.cleanup_temp_files(force=True)
+
 
             asyncio.create_task(generate_and_save_thought(
                 memory_index=memory_index,
@@ -1030,6 +996,19 @@ async def initialize_themes_cache(memory_index, logger):
     except Exception as e:
         logger.error(f"Failed to initialize themes cache: {e}")
 
+async def dynamic_prefix(bot, message):
+    # always keep normal bang
+    prefixes = ['!']
+    if isinstance(message.channel, discord.DMChannel):
+        return prefixes
+    if not message.guild or not message.guild.me:
+        return prefixes
+    tokens = [f'<@{bot.user.id}>', f'<@!{bot.user.id}>'] + [f'<@&{r.id}>' for r in message.guild.me.roles]
+    for t in tokens:
+        prefixes.append(f'{t}!')   # <@...>!command
+        prefixes.append(f'{t} !')  # <@...> !command
+    return prefixes
+
 def setup_bot(prompt_path=None, bot_id=None):
     """Initialize the Discord bot with specified configuration."""
     intents = discord.Intents.default()
@@ -1038,8 +1017,8 @@ def setup_bot(prompt_path=None, bot_id=None):
     help_command = CustomHelpCommand()
     
     bot = commands.Bot(
-        command_prefix='!', 
-        intents=intents, 
+        command_prefix=dynamic_prefix,
+        intents=intents,
         status=discord.Status.online,
         help_command=help_command
     )
@@ -1051,12 +1030,16 @@ def setup_bot(prompt_path=None, bot_id=None):
     memory_index = UserMemoryIndex(f'{bot_cache_dir}/memory_index', logger=bot.logger)
 
 
-    repo_index = RepoIndex(f'{bot_cache_dir}/repo_index')
+    # repo_index = RepoIndex(f'{bot_cache_dir}/repo_index')
+    repo_index = RepoIndex(bot_id)
+
     
     # Create a temp file cache for media shared from Discord 
-    files_root = os.path.join('cache', (bot_id if bot_id else 'default'), 'files')
-    os.makedirs(files_root, exist_ok=True)
-    bot.cache_managers = {'file': CacheManager(files_root)}
+    #files_root = os.path.join('cache', (bot_id if bot_id else 'default'), 'files')
+    #os.makedirs(files_root, exist_ok=True)
+    #bot.cache_managers = {'file': CacheManager(files_root)}
+    bot.cache = CacheManager(bot_id or "default")
+
     
     # Initialize GitHub repository with validation
     try:
@@ -1123,16 +1106,13 @@ def setup_bot(prompt_path=None, bot_id=None):
 
     @bot.event
     async def on_message(message):
-        if message.author == bot.user: return
-        command_content=None
-        if not isinstance(message.channel, discord.DMChannel):
-            if message.content.startswith(f'<@{bot.user.id}>') or message.content.startswith(f'<@!{bot.user.id}>'):
-                parts=message.content.split(maxsplit=1)
-                if len(parts)>1: command_content=parts[1]
-        if command_content and command_content.startswith('!'):
-            message.content=command_content; await bot.process_commands(message); return
-        elif isinstance(message.channel, discord.DMChannel) and message.content.startswith('!'):
-            await bot.process_commands(message); return
+        if message.author == bot.user:
+            return
+
+        ctx = await bot.get_context(message)
+        if ctx.valid:
+            await bot.process_commands(message)
+            return
 
         uid=str(message.author.id)
         attn=False
@@ -1145,7 +1125,8 @@ def setup_bot(prompt_path=None, bot_id=None):
                 user_id=uid
             )
 
-        if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions or attn:
+        if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions or any(r in message.guild.me.roles for r in message.role_mentions) or attn:
+
             has_supported_files=False
             if message.attachments:
                 for attachment in message.attachments:
@@ -1402,7 +1383,10 @@ def setup_bot(prompt_path=None, bot_id=None):
                 messages = []
                 async for msg in ctx.channel.history(limit=MAX_CONVERSATION_HISTORY):
                     if msg.id != ctx.message.id:  # Skip the command message
-                        combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                        #combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                        combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
+
+                        
                         msg_content = sanitize_mentions(msg.content, combined_mentions)
                         truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                         clean_name = msg.author.name
@@ -1431,7 +1415,6 @@ def setup_bot(prompt_path=None, bot_id=None):
                     context=context
                 )
 
-                #themes = ", ".join(get_current_themes(bot.memory_index))
                 themes=format_themes_for_prompt_memoized(bot.memory_index,str(ctx.author.id),mode="sections")
                 system_prompt = system_prompts['repo_file_chat'].replace('{amygdala_response}', str(bot.amygdala_response)).replace('{themes}', themes)
                 response_content = await bot.call_api(prompt, system_prompt=system_prompt)
@@ -1495,7 +1478,7 @@ def setup_bot(prompt_path=None, bot_id=None):
             messages = []
             async for msg in ctx.channel.history(limit=MAX_CONVERSATION_HISTORY):
                 if msg.id != ctx.message.id:  # Skip the question message
-                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
+                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
                     msg_content = sanitize_mentions(msg.content, combined_mentions)
                     truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
                     clean_name = msg.author.name
@@ -1647,7 +1630,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def get_logs(ctx):
         """Download bot logs (Permissions required)."""
         try:
-            log_dir = os.path.join('cache', bot.user.name, 'logs')
+            log_dir = os.path.join(config.logging.base_log_dir, bot.user.name, 'logs')
             log_path = os.path.join(
                 log_dir,
                 config.logging.jsonl_pattern.format(bot_id=bot.user.name)

@@ -193,15 +193,12 @@ graph LR
     class LLM,RG,DR response
 ```
 
-# Name Inspiration
+# LLMs in Multi-User Chat
 
-The name `defaultMODE` reflects two key concepts:
+Currently multi-turn/multi-user bots often exhibit confusion about their role and intent over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context remains a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing.  💀 
 
-The name refers to the human Default Mode Network (DMN)—brain regions active during rest and introspection. Like its neurological counterpart, our framework enables background cognitive processing where the agent homeostically regulates its memory space through term pruning and connection refinement. This self-regulation prevents memory bloat while preserving critical knowledge, allowing for emergent cognitive development that mimics human "mind-wandering" during idle periods.
+Update the `bot_config.py` when running on smaller or opensource models to avoid context rot. See the configuration docs for more details.
 
----
-
-*Currently multi-turn/multi-user bots often exhibit confusion about their role and intent over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context is a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing.  💀
 
 ---
 
