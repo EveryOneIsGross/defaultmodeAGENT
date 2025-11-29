@@ -145,222 +145,223 @@ async def maintain_typing_state(channel):
     except Exception as e:
         bot.logger.debug(f"Typing state maintenance ended: {str(e)}")
 
+async def fetch_history_with_reactions(channel, limit, skip_id=None):
+    """fetch history and reaction data without mutating Message objects"""
+    msgs = []
+    reactions_map = {}  # msg.id -> {emoji: [usernames]}
+    
+    async for msg in channel.history(limit=limit):
+        if skip_id and msg.id == skip_id:
+            continue
+        msgs.append(msg)
+        if msg.reactions:
+            reactions_map[msg.id] = {}
+            for rxn in msg.reactions:
+                users = [u async for u in rxn.users()]
+                reactions_map[msg.id][str(rxn.emoji)] = [u.name for u in users]
+    
+    return msgs, reactions_map
+
+
+def process_history_dual(msgs, reactions_map, temporal_parser, truncation_len, harsh_truncation_len=None):
+    """single pass over history → two outputs"""
+    simple_lines = []
+    formatted_list = []
+    trunc_len = harsh_truncation_len or truncation_len
+    
+    for msg in msgs:
+        name = msg.author.name
+        mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
+        sanitized = sanitize_mentions(msg.content, mentions)
+        simple_lines.append(f"@{name}: {sanitized}")
+        truncated = truncate_middle(sanitized, max_tokens=trunc_len)
+        local_ts = msg.created_at.astimezone().replace(tzinfo=None)
+        ts_str = local_ts.strftime("%H:%M [%d/%m/%y]")
+        temporal = temporal_parser.get_temporal_expression(ts_str)
+        formatted = f"@{name} ({temporal.base_expression}): {truncated}"
+        
+        # look up reactions from separate map
+        msg_reactions = reactions_map.get(msg.id, {})
+        if msg_reactions:
+            rxn_parts = [f"@{u}: {emoji}" for emoji, users in msg_reactions.items() for u in users]
+            if rxn_parts:
+                formatted += f"\n(Discord User Reactions: {' '.join(rxn_parts)})"
+        
+        formatted_list.append(formatted)
+    
+    simple_lines.reverse()
+    formatted_list.reverse()
+    return '\n'.join(simple_lines), formatted_list
+
+async def extract_content_and_reply(message, is_command, bot_id=None):
+    """extract user content, handle reply context, return (content, reply_context)"""
+    reply_context = None
+    if is_command:
+        parts = message.content.split(maxsplit=1)
+        return (parts[1] if len(parts) > 1 else "", None)
+    if message.guild and message.guild.me:
+        content = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
+    else:
+        content = message.content.strip()
+    if message.reference:
+        try:
+            original = await message.channel.fetch_message(message.reference.message_id)
+            original_content = original.content.strip()
+            if original_content:
+                for m in original.mentions:
+                    original_content = original_content.replace(f'<@{m.id}>', f'@{m.name}').replace(f'<@!{m.id}>', f'@{m.name}')
+                for ch in original.channel_mentions:
+                    original_content = original_content.replace(f'<#{ch.id}>', f'#{ch.name}')
+                reply_context = original_content
+                content = f"[@{message.author.name} replying to @{original.author.name}: {original_content}]\n\n@{message.author.name}: {content}"
+        except (discord.NotFound, discord.Forbidden):
+            pass
+    return content, reply_context
+
+async def get_or_create_hippocampus(bot):
+    """lazy init hippocampus per bot instance"""
+    if not hasattr(bot, '_hippocampus') or bot._hippocampus is None:
+        bot._hippocampus = Hippocampus(HippocampusConfig(blend_factor=config.persona.reranking_blend_factor))
+    return bot._hippocampus
+
+def build_memory_context(relevant_memories, temporal_parser, truncation_len):
+    """format memories with temporal parsing"""
+    if not relevant_memories:
+        return ""
+    ctx = f"{len(relevant_memories)} Potentially Relevant Memories:\n<memories>\n"
+    timestamp_pattern = r'\((\d{2}):(\d{2})\s*\[(\d{2}/\d{2}/\d{2})\]\)'
+    for memory, score in relevant_memories:
+        parsed = re.sub(
+            timestamp_pattern,
+            lambda m: f"({temporal_parser.get_temporal_expression(datetime.strptime(f'{m.group(1)}:{m.group(2)} {m.group(3)}', '%H:%M %d/%m/%y')).base_expression})",
+            memory
+        )
+        truncated = truncate_middle(parsed, max_tokens=truncation_len)
+        ctx += f"[Relevance: {score:.2f}] {truncated}\n"
+    ctx += "</memories>\n\n"
+    return ctx
+
+def build_url_context(url_results, truncation_len):
+    """format scraped url content"""
+    contents = []
+    errors = []
+    for data in url_results:
+        ctype = data.get('content_type', 'none')
+        if ctype not in ('error', 'none', 'html_preview'):
+            contents.append(f"URL Content: {data['url']}\nTitle: {data['title']}\nDescription: {data['description']}\n\nContent:\n{data['content']}")
+        elif ctype == 'html_preview' and data.get('content'):
+            contents.append(f"URL Content (partial): {data['url']}\nTitle: {data['title']}\n\nContent:\n{data['content']}")
+        elif ctype == 'none':
+            errors.append((data['url'], data.get('description') or 'Could not fetch content'))
+    if not contents:
+        return "", errors
+    ctx = "\nWeb Page Content:\n<web_content>\n"
+    for c in contents:
+        ctx += f"{truncate_middle(c, max_tokens=truncation_len)}\n"
+    ctx += "</web_content>\n\n"
+    return ctx, errors
+
+def build_conversation_context(formatted_msgs):
+    """wrap formatted messages in conversation tags"""
+    ctx = "**Ongoing Channel Conversation:**\n\n<conversation>\n"
+    for msg in formatted_msgs:
+        ctx += f"{msg}\n"
+    ctx += "</conversation>\n"
+    return ctx
+
+
 async def process_message(message, memory_index, prompt_formats, system_prompts, github_repo, is_command=False):
-    '''Main plan text message processing function for Discord bot.'''
+    """main message processing with parallel i/o and single history fetch"""
     bot.logger.debug(f"Processing message from {message.author.name}")
-    #bot.logger.debug(f"Raw content: {message.content}")
-    #bot.logger.debug(f"Mentions: {[m.name for m in message.mentions]}")
-    """Process an incoming Discord message and generate an appropriate response."""
+    
     if not getattr(bot, 'processing_enabled', True):
         await message.channel.send("BBL... ☕")
         return
+    
     user_id = str(message.author.id)
     user_name = message.author.name
-    # Extract URLs early in the flow
-    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
-    # Use memory_index for first interaction detection
-    is_first_interaction = not bool(memory_index.user_memories.get(user_id, []))
+    is_dm = isinstance(message.channel, discord.DMChannel)
     
-    # Process content and handle mentions
-    if is_command:
-        parts = message.content.split(maxsplit=1)
-        content = parts[1] if len(parts) > 1 else ""
-    else:
-        if message.guild and message.guild.me:
-            content = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
-        else:
-            content = message.content.strip()
-        reply_context = None
-        if message.reference and not is_command:
-            try:
-                original = await message.channel.fetch_message(message.reference.message_id)
-                original_content = original.content.strip()
-                original_author = original.author.name
-                replier = message.author.name
-                if original_content:
-                    for mention in original.mentions:
-                        original_content = original_content.replace(f'<@{mention.id}>', f'@{mention.name}')
-                        original_content = original_content.replace(f'<@!{mention.id}>', f'@{mention.name}')
-                    for channel in original.channel_mentions:
-                        original_content = original_content.replace(f'<#{channel.id}>', f'#{channel.name}')
-                    #reply_context = f"@{original_author}: {original_content}"
-                    reply_context = f"{original_content}"
-                    content = f"[@{replier} replying to @{original_author}: {original_content}]\n\n@{replier}: {content}"
-            except (discord.NotFound, discord.Forbidden):
-                pass
-
+    urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
+    is_first_interaction = not bool(memory_index.user_memories.get(user_id, []))
+    content, reply_context = await extract_content_and_reply(message, is_command)
     combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
-
-
     sanitized_content = sanitize_mentions(content, combined_mentions)
-    #bot.logger.info(f"Received message from {user_name} (ID: {user_id}): {sanitized_content}")
+    
+    context_parts = [sanitized_content, f"@{sanitize_mentions(user_name, combined_mentions)}"]
+    if not is_dm:
+        channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
+        context_parts.append(f"#{sanitize_mentions(channel_name, combined_mentions)}")
+    search_query = " ".join(context_parts)
+    
     try:
         response_content = None
-        try:
-            is_dm = isinstance(message.channel, discord.DMChannel)
-            # Get conversation context first
-            conversation_context = ""
-            async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
-                if msg.id != message.id:  # Skip the current message
-                    clean_name = msg.author.name
-                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
-
-                    msg_content = sanitize_mentions(msg.content, combined_mentions)
-                    conversation_context += f"@{clean_name}: {msg_content}\n"
-            # Enhance search query with contextual information
-            context_parts = [sanitized_content]
-            sanitized_user_name = sanitize_mentions(user_name, combined_mentions)
-            context_parts.append(f"@{sanitized_user_name}")
-            if not is_dm:
-                channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
-                sanitized_channel_name = sanitize_mentions(channel_name, combined_mentions)
-                context_parts.append(f"#{sanitized_channel_name}")
-            search_query = " ".join(context_parts)
-            # Get initial candidate memories using the async method
-            candidate_memories = await memory_index.search_async(
-                search_query, 
-                k=MEMORY_CAPACITY,  
-                user_id=(user_id if is_dm else None)
-            )
-            # Process memories based on reranking setting
-            if candidate_memories:
-                #bot.logger.info(f"Candidate memories: {candidate_memories}")
-                if config.persona.use_hippocampus_reranking:
-                    # Initialize Hippocampus for reranking
-                    hippocampus_config = HippocampusConfig(blend_factor=config.persona.reranking_blend_factor)
-                    hippocampus = Hippocampus(hippocampus_config)
-                    # Calculate and log threshold - high amygdala = lower threshold (more permissive)
-                    amygdala_scale = bot.amygdala_response / 100.0  # 0-1 scale
-                    threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH - (MOOD_COEFF * amygdala_scale))  # Fixed: subtract amygdala influence
-                    bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * amygdala_scale:.3f})")
-                    # Rerank memories with blended weights
-                    relevant_memories = await hippocampus.rerank_memories( query=search_query, memories=candidate_memories, threshold=threshold, blend_factor=config.persona.reranking_blend_factor )
-
-                    bot.logger.info(f"Reranked memories: {relevant_memories}")
-                    # Log the memories that passed the threshold
-                    bot.logger.info(f"Found {len(relevant_memories)} memories above threshold {threshold:.3f}:")
-                    for memory, score in relevant_memories:
-                        bot.logger.info(f"Memory score {score:.3f}: {memory[:100]}...")
-                else:
-                    # Skip reranking, use candidate memories directly
-                    relevant_memories = candidate_memories
-                    bot.logger.info(f"Using memories without reranking (reranking disabled): {len(relevant_memories)} memories")
-            else:
-                relevant_memories = []
-                bot.logger.info("No candidate memories found for reranking")
-            # Build memory context
-            if hasattr(message.channel, 'name'):
-                context = f"Current Discord server: {message.guild.name}, channel: #{message.channel.name}\n"
-            else:
-                context = "Current channel: Direct Message\n"
-            #context += "When referring to users, include their @ symbol with their username.\n\n"
+        
+        history_task = asyncio.create_task(fetch_history_with_reactions(message.channel, MAX_CONVERSATION_HISTORY, skip_id=message.id))
+        memory_task = asyncio.create_task(memory_index.search_async(search_query, k=MEMORY_CAPACITY, user_id=(user_id if is_dm else None)))
+        url_tasks = [asyncio.create_task(scrape_webpage(url)) for url in urls]
+        
+        history_result, candidate_memories = await asyncio.gather(history_task, memory_task)
+        history_msgs, reactions_map = history_result
+        url_results = await asyncio.gather(*url_tasks) if url_tasks else []
+        
+        simple_ctx, formatted_msgs = process_history_dual(history_msgs, reactions_map, bot.temporal_parser, TRUNCATION_LENGTH)
+        
+        if candidate_memories and config.persona.use_hippocampus_reranking:
+            hippocampus = await get_or_create_hippocampus(bot)
+            amygdala_scale = bot.amygdala_response / 100.0
+            threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH - (MOOD_COEFF * amygdala_scale))
+            bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * amygdala_scale:.3f})")
+            relevant_memories = await hippocampus.rerank_memories(query=search_query, memories=candidate_memories, threshold=threshold, blend_factor=config.persona.reranking_blend_factor)
+            bot.logger.info(f"Found {len(relevant_memories)} memories above threshold {threshold:.3f}")
+        else:
+            relevant_memories = candidate_memories or []
             if relevant_memories:
-                context += f"{len(relevant_memories)} Potentially Relevant Memories:\n"
-                context += "<memories>\n"
-                for memory, score in relevant_memories:
-                    # Convert timestamps in memory to temporal expressions
-                    timestamp_pattern = r'\((\d{2}):(\d{2})\s*\[(\d{2}/\d{2}/\d{2})\]\)'
-                    parsed_memory = re.sub(
-                        timestamp_pattern,
-                        lambda m: f"({bot.temporal_parser.get_temporal_expression(datetime.strptime(f'{m.group(1)}:{m.group(2)} {m.group(3)}', '%H:%M %d/%m/%y')).base_expression})",
-                        memory
-                    )
-                    truncated_memory = truncate_middle(parsed_memory, max_tokens=TRUNCATION_LENGTH)
-                    context += f"[Relevance: {score:.2f}] {truncated_memory}\n"
-                context += "</memories>\n\n"
-            # Process URLs if present
-            if urls:
-                url_contents = []
-                for url in urls:
-                    webpage_data = await scrape_webpage(url)
-                    if webpage_data['content_type'] != 'error':
-                        url_contents.append(f"URL Content: {url}\nTitle: {webpage_data['title']}\nDescription: {webpage_data['description']}\n\nContent:\n{webpage_data['content']}")
-                    else:
-                        await message.channel.send(f"Error scraping URL {url}: {webpage_data['error']}")
-                if url_contents:
-                    context += "\nWeb Page Content:\n<web_content>\n"
-                    for content in url_contents:
-                        context += f"{truncate_middle(content, max_tokens=WEB_CONTENT_TRUNCATION_LENGTH)}\n"
-                    context += "</web_content>\n\n"
-            context += "**Ongoing Channel Conversation:**\n\n"
-            context += "<conversation>\n"
-            messages = []
-            async for msg in message.channel.history(limit=MAX_CONVERSATION_HISTORY):
-                if msg.id != message.id:  # Skip the current message
-                    clean_name = msg.author.name
-                    combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
-
-                    msg_content = sanitize_mentions(msg.content, combined_mentions)
-                    truncated_content = truncate_middle(msg_content, max_tokens=TRUNCATION_LENGTH)
-                    # Convert Discord timestamp (UTC) to local time, then to pipeline format
-                    local_timestamp = msg.created_at.astimezone().replace(tzinfo=None)
-                    msg_timestamp_str = local_timestamp.strftime("%H:%M [%d/%m/%y]")
-                    temporal_expr = bot.temporal_parser.get_temporal_expression(msg_timestamp_str)
-                    formatted_msg = f"@{clean_name} ({temporal_expr.base_expression}): {truncated_content}"
-                    # Add reactions if present
-                    if msg.reactions:
-                        reaction_parts = []
-                        for reaction in msg.reactions:
-                            reaction_emoji = str(reaction.emoji)
-                            async for user in reaction.users():
-                                reaction_user_name = user.name
-                                reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
-                        
-                        if reaction_parts:
-                            formatted_msg += f"\n(Discord User Reactions: {' '.join(reaction_parts)})"
-                    
-                    messages.append(formatted_msg)
-            
-            for msg in reversed(messages):
-                context += f"{msg}\n"
-            context += "</conversation>\n"
-            
-            prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
-            prompt = prompt_formats[prompt_key].format(
-                context=sanitize_mentions(context, combined_mentions),
-                user_name=user_name,
-                user_message=sanitize_mentions(sanitized_content, combined_mentions)
-            )
-
-            themes=format_themes_for_prompt_memoized(bot.memory_index,user_id,mode="sections")
-
-            system_prompt_key = 'default_chat'
-            system_prompt = system_prompts[system_prompt_key].replace('{amygdala_response}', str(bot.amygdala_response)).replace('{themes}', themes)
-
-            typing_task = asyncio.create_task(maintain_typing_state(message.channel))
-            try:
-                response_content = await bot.call_api(prompt, context=context, system_prompt=system_prompt, temperature=bot.amygdala_response/100)
-                response_content = clean_response(response_content)
-            finally:
-                typing_task.cancel()
+                bot.logger.info(f"Using memories without reranking: {len(relevant_memories)} memories")
+        
+        if hasattr(message.channel, 'name'):
+            context = f"Current Discord server: {message.guild.name}, channel: #{message.channel.name}\n"
+        else:
+            context = "Current channel: Direct Message\n"
+        
+        context += build_memory_context(relevant_memories, bot.temporal_parser, TRUNCATION_LENGTH)
+        
+        url_ctx, url_errors = build_url_context(url_results, WEB_CONTENT_TRUNCATION_LENGTH)
+        for url, err in url_errors:
+            await message.channel.send(f"Error scraping URL {url}: {err}")
+        context += url_ctx
+        
+        context += build_conversation_context(formatted_msgs)
+        
+        prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
+        prompt = prompt_formats[prompt_key].format(
+            context=sanitize_mentions(context, combined_mentions),
+            user_name=user_name,
+            user_message=sanitize_mentions(sanitized_content, combined_mentions)
+        )
+        
+        themes = format_themes_for_prompt_memoized(bot.memory_index, user_id, mode="sections")
+        system_prompt = system_prompts['default_chat'].replace('{amygdala_response}', str(bot.amygdala_response)).replace('{themes}', themes)
+        
+        typing_task = asyncio.create_task(maintain_typing_state(message.channel))
+        try:
+            response_content = await bot.call_api(prompt, context=context, system_prompt=system_prompt, temperature=bot.amygdala_response/100)
+            response_content = clean_response(response_content)
         finally:
-            pass
-            
+            typing_task.cancel()
+        
         if response_content:
-            # Add logging to help debug DM issues
-            is_dm = isinstance(message.channel, discord.DMChannel)
-            #bot.logger.info(f"Formatting response for channel type: {'DM' if is_dm else 'Guild'}")
-            #bot.logger.info(f"Channel has guild: {message.guild is not None}, Guild name: {message.guild.name if message.guild else 'None'}")
             formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
             await send_long_message(message.channel, formatted_content, bot=bot)
-            #bot.logger.info(f"Sent response to {user_name} (ID: {user_id}): {response_content[:1000]}...")
+            
             timestamp = currentmoment()
             channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
-            # Create complete interaction memory including both user input and bot response
+            
             if hasattr(message.channel, 'name'):
-                memory_text = (
-                    f"@{user_name} in {message.guild.name} #{channel_name} ({timestamp}): "
-                    f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
-                    f"@{bot.user.name}: {response_content}"
-                )
+                memory_text = f"@{user_name} in {message.guild.name} #{channel_name} ({timestamp}): {sanitize_mentions(sanitized_content, combined_mentions)}\n@{bot.user.name}: {response_content}"
             else:
-                memory_text = (
-                    f"@{user_name} in DM ({timestamp}): "
-                    f"{sanitize_mentions(sanitized_content, combined_mentions)}\n"
-                    f"@{bot.user.name}: {response_content}"
-                )
-            #memory_index.add_memory(user_id, memory_text)
-
+                memory_text = f"@{user_name} in DM ({timestamp}): {sanitize_mentions(sanitized_content, combined_mentions)}\n@{bot.user.name}: {response_content}"
+            
             await memory_index.add_memory_async(user_id, memory_text)
             
             asyncio.create_task(generate_and_save_thought(
@@ -371,15 +372,15 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 prompt_formats=prompt_formats,
                 system_prompts=system_prompts,
                 bot=bot,
-                conversation_context=context
+                conversation_context=simple_ctx
             ))
-            # Maintain only JSONL logging for persistence
+            
             log_to_jsonl({
                 'event': 'chat_interaction',
                 'timestamp': datetime.now().isoformat(),
                 'user_id': user_id,
                 'user_name': user_name,
-                'channel': message.channel.name if hasattr(message.channel, 'name') else 'DM',
+                'channel': channel_name,
                 'user_message': sanitized_content,
                 'reply_to': reply_context,
                 'ai_response': response_content,
@@ -387,7 +388,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
                 'prompt': prompt,
                 'temperature': bot.amygdala_response/100
             }, bot_id=bot.user.name)
-
+    
     except Exception as e:
         error_message = f"An error occurred: {str(e)}"
         await send_long_message(message.channel, error_message, bot=bot)
@@ -402,261 +403,219 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         }, bot_id=bot.user.name)
 
 async def process_files(message, memory_index, prompt_formats, system_prompts, user_message="", bot=None, temperature=TEMPERATURE):
-    """Secondary entry for multiple files from a Discord message, handling combinations of images and text files, including resizing large images."""
+    """file processing with parallel url scraping and single history fetch"""
     if not getattr(bot, 'processing_enabled', True):
         await message.channel.send("Processing currently disabled.")
         return
+    
     user_id = str(message.author.id)
     user_name = message.author.name
-    # Extract URLs from message content
+    
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
     if not message.attachments and not urls:
-        await message.channel.send("No attachments or URLs found.") 
+        await message.channel.send("No attachments or URLs found.")
         return
-    # Track files for combined analysis
-    image_files = []
-    text_contents = []
-    temp_paths = []
-    response_content = None
-    # Track detected types for prompt selection
-    has_images = False
-    has_text = False
-    # Process URLs first
-    if urls:
-        for url in urls:
-            webpage_data = await scrape_webpage(url)
-            if webpage_data['content_type'] != 'error':
-                text_contents.append({
-                    'filename': f"webpage_{webpage_data['title']}",
-                    'content': f"URL: {webpage_data['url']}\nTitle: {webpage_data['title']}\nDescription: {webpage_data['description']}\n\nContent:\n{webpage_data['content']}"
-                })
-                has_text = True
-            else:
-                await message.channel.send(f"Error scraping URL {url}: {webpage_data['error']}")
-    # Standardize mention handling
+    
     if message.guild and message.guild.me:
         user_message = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
     combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
-   
     user_message = sanitize_mentions(user_message, combined_mentions)
+    
     bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
+    
+    history_task = asyncio.create_task(fetch_history_with_reactions(message.channel, MINIMAL_CONVERSATION_HISTORY, skip_id=message.id))
+    url_tasks = [asyncio.create_task(scrape_webpage(url)) for url in urls]
+    
+    image_files = []
+    text_contents = []
+    temp_paths = []
+    has_images = False
+    has_text = False
+    
     try:
-        amygdala_response = str(bot.amygdala_response if bot else DEFAULT_AMYGDALA_RESPONSE)
-        themes = ", ".join(get_current_themes(bot.memory_index))
-        #bot.logger.info(f"Using amygdala arousal: {amygdala_response}")
+        for attachment in message.attachments:
+            ext = os.path.splitext(attachment.filename.lower())[1]
+            is_potentially_image = (attachment.content_type and attachment.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS)
+            is_potentially_text = ext in ALLOWED_EXTENSIONS
+            data_to_save = None
+            processed_as_image = False
+            processed_as_text = False
+            
+            if attachment.size > 1000000:
+                if is_potentially_image:
+                    try:
+                        image_data = await attachment.read()
+                        img = Image.open(io.BytesIO(image_data))
+                        img.load()
+                        img.thumbnail((512, 512))
+                        output_buffer = io.BytesIO()
+                        save_format = 'PNG' if img.mode == 'RGBA' else 'JPEG'
+                        if img.mode == 'P':
+                            img = img.convert('RGB')
+                            save_format = 'JPEG'
+                        elif img.mode == 'LA':
+                            img = img.convert('RGBA')
+                            save_format = 'PNG'
+                        img.save(output_buffer, format=save_format)
+                        resized_data = output_buffer.getvalue()
+                        if len(resized_data) > 1000000:
+                            bot.logger.warning(f"Image {attachment.filename} still too large after resizing.")
+                            await message.channel.send(f"Sorry, could not resize {attachment.filename} sufficiently. Skipping.")
+                            continue
+                        data_to_save = resized_data
+                        processed_as_image = True
+                    except Exception as e:
+                        bot.logger.error(f"Error resizing image {attachment.filename}: {str(e)}")
+                        await message.channel.send(f"Error processing large image {attachment.filename}. Skipping.")
+                        continue
+                else:
+                    bot.logger.warning(f"Skipping oversized non-image file: {attachment.filename}")
+                    await message.channel.send(f"Skipping {attachment.filename} - file is over 1MB and not a resizable image.")
+                    continue
+            else:
+                if is_potentially_image:
+                    try:
+                        image_data = await attachment.read()
+                        data_to_save = image_data
+                        processed_as_image = True
+                        try:
+                            img = Image.open(io.BytesIO(data_to_save))
+                            img.verify()
+                        except Exception as e:
+                            bot.logger.warning(f"Small image {attachment.filename} failed verification: {e}. Still attempting to use.")
+                    except Exception as e:
+                        bot.logger.error(f"Error processing small image {attachment.filename}: {str(e)}")
+                        continue
+                elif is_potentially_text:
+                    try:
+                        content_bytes = await attachment.read()
+                        text_content = content_bytes.decode('utf-8')
+                        text_contents.append({'filename': attachment.filename, 'content': text_content})
+                        processed_as_text = True
+                    except UnicodeDecodeError as e:
+                        bot.logger.error(f"Error decoding text file {attachment.filename}: {str(e)}")
+                        await message.channel.send(f"Warning: {attachment.filename} couldn't be decoded as UTF-8. Skipping.")
+                        continue
+                    except Exception as e:
+                        bot.logger.error(f"Error reading text file {attachment.filename}: {str(e)}")
+                        continue
+                else:
+                    await message.channel.send(f"Skipping {attachment.filename} - unsupported type. Supported types: {', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS)}")
+                    continue
+            
+            if processed_as_image and data_to_save:
+                try:
+                    temp_path, file_id = bot.cache.create_temp_file(
+                        user_id=user_id,
+                        prefix="img_",
+                        suffix=os.path.splitext(attachment.filename)[1],
+                        content=data_to_save
+                    )
+                    if not os.path.exists(temp_path):
+                        bot.logger.error(f"Failed to save image to temp file: {temp_path}")
+                        continue
+                    image_files.append(attachment.filename)
+                    temp_paths.append(temp_path)
+                    has_images = True
+                except Exception as e:
+                    bot.logger.error(f"Error saving temp image file {attachment.filename}: {str(e)}")
+                    continue
+            elif processed_as_text:
+                has_text = True
+        
+        history_result = await history_task
+        history_msgs, reactions_map = history_result
+        url_results = await asyncio.gather(*url_tasks) if url_tasks else []
+        
+        for data in url_results:
+            ctype = data.get('content_type', 'none')
+            if ctype not in ('error', 'none'):
+                text_contents.append({
+                    'filename': f"webpage_{data['title']}",
+                    'content': f"URL: {data['url']}\nTitle: {data['title']}\nDescription: {data['description']}\n\nContent:\n{data['content']}"
+                })
+                has_text = True
+            elif ctype == 'none':
+                await message.channel.send(f"Error scraping URL {data['url']}: {data.get('description', 'Unknown error')}")
+        
+        if not (has_images or has_text):
+            if not message.channel.last_message or message.channel.last_message.author != bot.user:
+                await message.channel.send("No valid files found to analyze after processing.")
+            return
+        
+        _, formatted_msgs = process_history_dual(history_msgs, reactions_map, bot.temporal_parser, HARSH_TRUNCATION_LENGTH)
+        
         context = f"Current channel: #{message.channel.name if hasattr(message.channel, 'name') else 'Direct Message'}\n\n"
-        #context += "Ongoing Chatroom Conversation:\n\n"
         context += "<conversation>\n"
-        messages = []
-        async for msg in message.channel.history(limit=MINIMAL_CONVERSATION_HISTORY):
-            #combined_mentions = list(msg.mentions) + list(msg.channel_mentions)
-            combined_mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
-            msg_content = sanitize_mentions(msg.content, combined_mentions)
-            truncated_content = truncate_middle(msg_content, max_tokens=HARSH_TRUNCATION_LENGTH)
-            author_name = msg.author.name
-            # appends @ for chatroom user names -- this needs fixing....
-            display_text = f"@{('@' + author_name) if not msg.author.bot else author_name}: {truncated_content}"
-            # Add reactions if present
-            if msg.reactions:
-                reaction_parts = []
-                for reaction in msg.reactions:
-                    reaction_emoji = str(reaction.emoji)
-                    async for user in reaction.users():
-                        reaction_user_name = user.name
-                        reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
-                if reaction_parts:
-                    display_text += f" ({ ' '.join(reaction_parts) })"
-            messages.append(display_text)
-        for msg in reversed(messages):
+        for msg in formatted_msgs:
             context += f"{msg}\n"
         context += "</conversation>\n"
-        # Main processing block
+        
+        amygdala_response = str(bot.amygdala_response if bot else DEFAULT_AMYGDALA_RESPONSE)
+        themes = ", ".join(get_current_themes(bot.memory_index))
+        
+        if has_images and has_text:
+            if 'analyze_combined' not in prompt_formats or 'combined_analysis' not in system_prompts:
+                raise ValueError("Missing required combined analysis prompts")
+            prompt = prompt_formats['analyze_combined'].format(
+                context=context,
+                image_files="\n".join(image_files),
+                text_files="\n".join(f"{t['filename']}: {truncate_middle(t['content'], 1000)}" for t in text_contents),
+                user_message=user_message if user_message else "Please analyze these files.",
+                user_name=user_name
+            )
+            system_prompt = system_prompts['combined_analysis'].replace('{amygdala_response}', amygdala_response).replace('{themes}', themes)
+        elif has_images:
+            if 'analyze_image' not in prompt_formats or 'image_analysis' not in system_prompts:
+                raise ValueError("Missing required image analysis prompts")
+            prompt = prompt_formats['analyze_image'].format(
+                context=context,
+                filename=", ".join(image_files),
+                user_message=user_message if user_message else "Please analyze these images.",
+                user_name=user_name
+            )
+            system_prompt = system_prompts['image_analysis'].replace('{amygdala_response}', amygdala_response).replace('{themes}', themes)
+        else:
+            if 'analyze_file' not in prompt_formats or 'file_analysis' not in system_prompts:
+                raise ValueError("Missing required file analysis prompts")
+            combined_text = "\n\n".join(f"=== {t['filename']} ===\n{t['content']}" for t in text_contents)
+            prompt = prompt_formats['analyze_file'].format(
+                context=context,
+                filename=", ".join(t['filename'] for t in text_contents),
+                file_content=combined_text,
+                user_message=user_message,
+                user_name=user_name
+            )
+            system_prompt = system_prompts['file_analysis'].replace('{amygdala_response}', amygdala_response).replace('{themes}', themes)
+        
+        typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         try:
-            # Loop through attachments, handle size check and potential resizing here
-            for attachment in message.attachments:
-                ext = os.path.splitext(attachment.filename.lower())[1]
-                is_potentially_image = (attachment.content_type and 
-                                      attachment.content_type.startswith('image/') and 
-                                      ext in ALLOWED_IMAGE_EXTENSIONS)
-                is_potentially_text = ext in ALLOWED_EXTENSIONS
-                data_to_save = None
-                processed_as_image = False
-                processed_as_text = False
-                if attachment.size > 1000000:
-                    # --- Handling for OVERSIZED attachments --- 
-                    if is_potentially_image:
-                        try:
-                            image_data = await attachment.read()
-                            #bot.logger.info(f"Downloaded large image data: {len(image_data)} bytes")                         
-                            img = Image.open(io.BytesIO(image_data))
-                            img.load()
-                            #bot.logger.info(f"Large image opened: {img.format}, {img.size}, {img.mode}")
-                            MAX_DIMENSION = 512 # Still use a dimension cap
-                            img.thumbnail((MAX_DIMENSION, MAX_DIMENSION))
-                            #bot.logger.info(f"Resized large image to fit within {MAX_DIMENSION}x{MAX_DIMENSION}")
-                            output_buffer = io.BytesIO()
-                            save_format = 'PNG' if img.mode == 'RGBA' else 'JPEG'
-                            if img.mode == 'P': img = img.convert('RGB'); save_format = 'JPEG'
-                            elif img.mode == 'LA': img = img.convert('RGBA'); save_format = 'PNG'
-                            img.save(output_buffer, format=save_format)
-                            resized_data = output_buffer.getvalue()
-                            if len(resized_data) > 1000000: # Check size *after* resize
-                                bot.logger.warning(f"Image {attachment.filename} still too large after resizing.")
-                                await message.channel.send(f"Sorry, could not resize {attachment.filename} sufficiently. Skipping.")
-                                continue 
-                            else:
-                                data_to_save = resized_data
-                                processed_as_image = True # Mark as successfully processed image
-                        except Exception as resize_error:
-                            bot.logger.error(f"Error resizing image {attachment.filename}: {str(resize_error)}")
-                            bot.logger.error(traceback.format_exc())
-                            await message.channel.send(f"Error processing large image {attachment.filename}. Skipping.")
-                            continue # Skip on error
-                    else:
-                        # Oversized and not an image
-                        bot.logger.warning(f"Skipping oversized non-image file: {attachment.filename}")
-                        await message.channel.send(f"Skipping {attachment.filename} - file is over 1MB and not a resizable image.")
-                        continue # Skip this attachment
-                else:
-                    # --- Handling for attachments UNDER OR EQUAL 1MB --- 
-                    if is_potentially_image:
-                        try:
-                            image_data = await attachment.read()
-                            data_to_save = image_data 
-                            processed_as_image = True
-                            try:
-                                img = Image.open(io.BytesIO(data_to_save))
-                                img.verify() # Quick check
-                            except Exception as verify_err:
-                                bot.logger.warning(f"Small image {attachment.filename} failed verification: {verify_err}. Still attempting to use.")
-
-                        except Exception as img_error:
-                            bot.logger.error(f"Error processing small image {attachment.filename}: {str(img_error)}")
-                            continue 
-                    elif is_potentially_text:
-                        try:
-                            content_bytes = await attachment.read()
-                            text_content = content_bytes.decode('utf-8')
-                            text_contents.append({
-                                'filename': attachment.filename,
-                                'content': text_content
-                            })
-                            processed_as_text = True
-                        except UnicodeDecodeError as e:
-                            bot.logger.error(f"Error decoding text file {attachment.filename}: {str(e)}")
-                            await message.channel.send(
-                                f"Warning: {attachment.filename} couldn't be decoded as UTF-8. Skipping."
-                            )
-                            continue
-                        except Exception as e:
-                            bot.logger.error(f"Error reading text file {attachment.filename}: {str(e)}")
-                            continue
-                    else:
-                         await message.channel.send(
-                            f"Skipping {attachment.filename} - unsupported type. "
-                            f"Supported types: { ', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS) }"
-                         )
-                         continue # Skip unsupported type
-                # --- Save processed data to temp file --- 
-                if processed_as_image and data_to_save:
-                    try:
-                        temp_path, file_id = bot.cache.create_temp_file(
-                            user_id=user_id,
-                            prefix="img_",
-                            suffix=os.path.splitext(attachment.filename)[1],
-                            content=data_to_save
-                        )
-                        if not os.path.exists(temp_path):
-                             bot.logger.error(f"Failed to save image to temp file: {temp_path}")
-                             continue # Skip if saving failed
-                        image_files.append(attachment.filename)
-                        temp_paths.append(temp_path)
-                        has_images = True 
-                    except Exception as e:
-                         bot.logger.error(f"Error saving temp image file {attachment.filename}: {str(e)}")
-                         continue 
-                elif processed_as_text:
-                     has_text = True
-            # --- End of attachment loop --- 
-            if not (has_images or has_text):
-                if not message.channel.last_message or message.channel.last_message.author != bot.user:
-                     await message.channel.send("No valid files found to analyze after processing.")
-                return 
-            if has_images and has_text:
-                if 'analyze_combined' not in prompt_formats or 'combined_analysis' not in system_prompts:
-                    raise ValueError("Missing required combined analysis prompts")
-            elif has_images:
-                if 'analyze_image' not in prompt_formats or 'image_analysis' not in system_prompts:
-                    raise ValueError("Missing required image analysis prompts")
-            else:  # has_text
-                if 'analyze_file' not in prompt_formats or 'file_analysis' not in system_prompts:
-                    raise ValueError("Missing required file analysis prompts")
-            if image_files and text_contents:
-                prompt = prompt_formats['analyze_combined'].format(
-                    context=context,
-                    image_files="\n".join(image_files),
-                    text_files="\n".join(f"{t['filename']}: {truncate_middle(t['content'], 1000)}" for t in text_contents),
-                    user_message=user_message if user_message else "Please analyze these files.",
-                    user_name=user_name
-                )
-                system_prompt = system_prompts['combined_analysis'].replace(
-                    '{amygdala_response}',
-                    amygdala_response
-                ).replace('{themes}', themes)
-            elif image_files:
-                prompt = prompt_formats['analyze_image'].format(
-                    context=context,
-                    filename=", ".join(image_files),
-                    user_message=user_message if user_message else "Please analyze these images.",
-                    user_name=user_name
-                )
-                system_prompt = system_prompts['image_analysis'].replace(
-                    '{amygdala_response}',
-                    amygdala_response
-                ).replace('{themes}', themes)
-            else:
-                combined_text = "\n\n".join(f"=== {t['filename']} ===\n{t['content']}" for t in text_contents)
-                prompt = prompt_formats['analyze_file'].format(
-                    context=context,
-                    filename=", ".join(t['filename'] for t in text_contents),
-                    file_content=combined_text,
-                    user_message=user_message,
-                    user_name=user_name
-                )
-                system_prompt = system_prompts['file_analysis'].replace(
-                    '{amygdala_response}',
-                    amygdala_response
-                ).replace('{themes}', themes)
-            #bot.logger.info(f"Using prompt type: {'combined' if has_images and has_text else 'image' if has_images else 'text'}")
-            typing_task = asyncio.create_task(maintain_typing_state(message.channel))
-            try:
-                response_content = await bot.call_api(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    image_paths=temp_paths if temp_paths else None,
-                    temperature=bot.amygdala_response/100
-                )
-                response_content = clean_response(response_content)
-            finally:
-                typing_task.cancel()
-
-            if response_content:
-                formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
-                await send_long_message(message.channel, formatted_content, bot=bot)
-
+            response_content = await bot.call_api(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                image_paths=temp_paths if temp_paths else None,
+                temperature=bot.amygdala_response/100
+            )
+            response_content = clean_response(response_content)
         finally:
-            pass
+            typing_task.cancel()
+        
         if response_content:
-            # Save memory and generate thought
+            formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
+            await send_long_message(message.channel, formatted_content, bot=bot)
+            
             files_description = []
             if image_files:
                 files_description.append(f"{len(image_files)} images: {', '.join(image_files)}")
             if text_contents:
                 files_description.append(f"{len(text_contents)} text files: {', '.join(t['filename'] for t in text_contents)}")
+            
             timestamp = currentmoment()
             channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
             memory_text = f"({timestamp}) Grokking {' and '.join(files_description)} for User @{user_name} in #{channel_name}. User's message: {sanitize_mentions(user_message, combined_mentions)}\n@{bot.user.name}: {response_content}"
+            
             await memory_index.add_memory_async(user_id, memory_text)
+            
             file_context = ""
             if text_contents:
                 file_context += "File Contents:\n"
@@ -665,10 +624,10 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     file_context += f"--- {file_data['filename']} ---\n{truncated_content}\n\n"
             if image_files:
                 file_context += f"Images analyzed: {', '.join(image_files)}\n"
+            
             def cleanup_temp_files():
                 bot.cache.cleanup_temp_files(force=True)
-
-
+            
             asyncio.create_task(generate_and_save_thought(
                 memory_index=memory_index,
                 user_id=user_id,
@@ -681,30 +640,23 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                 image_paths=temp_paths if temp_paths else None,
                 cleanup_callback=cleanup_temp_files
             ))
-
+            
             log_to_jsonl({
                 'event': 'file_analysis',
                 'timestamp': datetime.now().isoformat(),
                 'user_id': user_id,
                 'user_name': user_name,
-                'files_processed': {
-                    'images': image_files,
-                    'text_files': [t['filename'] for t in text_contents]
-                },
+                'files_processed': {'images': image_files, 'text_files': [t['filename'] for t in text_contents]},
                 'user_message': user_message,
                 'ai_response': response_content
             }, bot_id=bot.user.name)
-
+    
     except Exception as e:
         error_message = f"An error occurred while analyzing files: {str(e)}"
         await send_long_message(message.channel, error_message, bot=bot)
         bot.logger.error(f"Error in file analysis for {user_name} (ID: {user_id}): {str(e)}")
         bot.logger.error(traceback.format_exc())
         
-    finally:
-        # Cleanup will happen after thought generation completes
-        pass
-
 async def send_long_message(channel: discord.TextChannel, text: str, max_length=1800, bot=None):
     '''Send a long message to a Discord channel, splitting it into chunks if necessary while preserving formatting.'''
     if not text:
