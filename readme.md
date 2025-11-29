@@ -6,207 +6,99 @@
 
 # defaultMODE: Emergent Self-Regulating AI Entities
 
-`defaultMODE` is a Python framework for creating Discord-based AI agents that exhibit genuine learning and evolution over time; at inference-time *selective attention* and *memory refinement*, drawing inspiration from abstracted models of human brain function. Focused on long-term persistence and the emergence of complex behavior from simple, well-defined fundamentals. 
+`defaultMODE` is a cognitive architecture for discord agents that remember, forget, and dream.
 
-A local-first framework for ALL models, where attention, memory, and emotion weave a self-regulating mind that can dream, decay, and persist.
+memory systems prune and specialize through use. attention emerges from what the agent already knows. arousal modulates creativity based on context richness. a background process walks memory while idle, generating reflections, strengthening some connections, letting others decay.
 
+local-first, model-agnostic. works with ollama, openai, anthropic, vllm, gemini. the skeleton stays coherent even when the model is small.
+
+not just another chatbot framework. a framework for entities that persist.
 
 [UPDATES](docs/updates.md)
 
-# Features and Abilities
+----
 
-- Neurologically-inspired memory architecture - Default Mode Network (DMN) processor creates continuous background thought generation through associative memory walks
-- Adaptive emotional regulation - Integrated amygdala response system that modulates temperature, defined prompt behavior intensity, based on homeostatic memory density and context richness
-- Hippocampus-style memory reranking - Hybrid lexical-semantic scoring system that blends keyword search with vector embeddings for human-like memory recall
-- Attention logic for NL fuzzy topic matching for relevent engagement, lets agents join in if conversation meets their defined interests and sparse themes from memories
-- Theme mining from bot's memory index for establishing emergent preferences, and to contribute to their attention triggers (if a user says something that aligns with what's on their mind the will respond)
-- All modules are regulated by the state of the others creating a distributed homeostasis of cognition.
-- Channel vs DM memory siloing and context switching - Intelligent context boundaries that respect privacy and conversation scope
-- `Youtube` and Website grokking from shared links - Using novel "skim" reading method instead of narrow chunking for holistic content understanding
-- Discord first data conditioning - All user name logic, message limit chunking and block formatting elegantly considered for seamless integration
-- Full auditing and logging suite - Comprehensive tracking in both SQL and JSONL formats for complete observability
+# why choose defaultMODE?
 
+multi-user chatbots lose themselves. large cloud models can hold character across long conversations, but smaller open-source models collapse—mirroring whoever spoke last, forgetting their own voice after one turn. the longer the context, the more the self dissolves.
+
+most frameworks ignore this. they assume the model will just figure it out.
+
+defaultMODE is an animated skeleton. 💀 the cognitive architecture maintains shape even when the underlying model is small or forgetful. memory, attention, and arousal systems do the work of coherence so the model doesn't have to hold everything in context. you can strip bones out and the thing still stands.
+
+tune `bot_config.py` when running lighter models. the framework adapts; context rot becomes optional.
 
 ---
 
 
-<table align="center">
+<table align="center" width="100%">
     <tr>
-        <td width="50%">
+        <td width="40%" valign="middle">
             <img src="docs/assests/dmn-visualise.gif" alt="dmn demo" width="100%" style="image-rendering: pixelated;">
         </td>
-        <td width="50%" style="text-align: left; padding-left: 2rem;">
-            <ul>
-                <li>Continuous memory refinement through term pruning and connection weighting</li>
-                <li>Dynamic hyperparameter scaling based on memory density and amygdala response</li>
-                <li>Homeostatic regulation preventing memory bloat while preserving critical knowledge</li>
-                <li>Real-time semantic relationship discovery through fuzzy matching and temporal parsing</li>
-                <li>Self-regulating modes (forgetful, homeostatic, conservative) for adaptive behavior</li>
-            </ul>
+        <td width="60%" valign="middle">
+            <img src="docs/assests/pink_banner.png" alt="dm banner" width="100%" style="image-rendering: pixelated;">
         </td>
     </tr>
 </table>
 
 ---
 
-**Core Principles and Features: Simplicity, Emergence, and Persistence**
-
-*   **Memory System:**
-    *   **Inverted Index with TF-IDF Weighting:** A simple inverted index provides fast memory retrieval.  The *search* process incorporates an IDF (Inverse Document Frequency) weighting scheme, similar to TF-IDF, prioritizing memories with rarer, more distinctive terms. Memories are connected by shared, weighted terms.
-    *   **Term Pruning:**  Overlapping terms between related memories are *removed* during reflection, forcing memories to become more strongly associated with their *unique* content.  This drives specialization and reduces generic responses.
-    *   **Hippocampal Formation (Embedding-Based Reranking):**  At inference time, candidate memories are reranked using an embedding model, surfacing the most contextually relevant memories. The selection bandwidth is tied to the amygdala response.
-    *   **Temporal Context Parsing:**  Time expressions are parsed as naturual language (vs timestamps) and integrated into the agent's context.
-    *   **Intelligence through Selective Attention:** The system focuses on relevant information rather than comprehensive knowledge.
-
-*   **Default Mode Network (DMN) Simulation:** A background process (`DMNProcessor`) mimics aspects of the brain's DMN:
-    1.  **Memory Selection:** A random memory is chosen.
-    2.  **Related Memory Retrieval:** Connected memories are identified.
-    3.  **Term Pruning:** Overlapping terms are removed.
-    4.  **Thought Generation:** An LLM generates a new "thought" based on the *refined* context, which is then added to the memory index.
-    5.  **Memory Decay:** Memories decay as connections and are broken and weighting values reduced.
-    6.  **Forgetting:**  Memories with no remaining connections are removed.
-    This iterative process creates a continuously evolving internal model.
-
-*   **Amygdala-Inspired Modulation:** An "Amygdala Complex" simulates emotional influence by adjusting the LLM's temperature.  Higher "arousal" (based on memory density) leads to more creative outputs; lower "arousal" promotes deterministic responses. This value is routed throughout the cognitive flow, `{string}` variables in prompts allow for dynamic behavior changes.
-
-*   **Discord Embodiment:**
-    *   **Context-Aware Message Processing:**  Handles messages, mentions, and context.
-    *   **Multi-Agent Interaction:** Supports interactions between multiple agents.
-    *   **Automated Discord Management:**  Handles regex, chunking, and formatting.
-
-*   **LLM Integration:**
-    *   **Multi-Provider Support:**  Currently supports OpenAI, Anthropic, Ollama, and vLLM.
-    *   **Embedding Model Support:** Uses embedding models for reranking.
-    *   **Text and Image Processing:**  Can handle both text and image inputs (more modalities to come).
-    *   **File and GitHub Integration:** Processes files and GitHub repositories.
-
-*   **Persistence and Configuration:**
-
-    * **Memory Persistence**: User memories are semantically linked in an indexed file structure, persisting between sessions, influencing personality and evolving with agent.
-    *   **File Caching:**  Manages temporary files for performance and privacy.
-    *   **Configuration Storage:** Uses YAML files and environment variables for flexible and secure configuration.
-    *   **Runtime Adjustable Parameters:**  Allows adjusting settings like temperature during runtime.
-
-*   **Auditing and Monitoring:**
-    *   **JSONL Logging:**  Logs all interactions for debugging, analytics, and compliance.
-    *   **SQLite Database:**  Provides an operational layer for querying and analyzing interaction data.
-
-----
-
-**The following diagram provides a visual representation of the agent's core processes, emphasizing the interaction between attention, memory, and the DMN.**
-
-```mermaid
-%%{
-  init: {
-    'theme': 'base',
-    'themeVariables': {
-      'primaryColor': '#ff9c9c',
-      'primaryTextColor': '#000000',
-      'primaryBorderColor': '#000000',
-      'lineColor': '#000000',
-      'secondaryColor': '#ff9c9c',
-      'tertiaryColor': '#ff9c9c',
-      'backgroundColor': '#ff9c9c',
-      'background': '#ff9c9c',
-      'nodeBorder': '#000000',
-      'textColor': '#000000',
-      'mainBkg': '#ff9c9c',
-      'edgeLabelBackground': '#ff9c9c',
-      'clusterBkg': '#ff9c9c',
-      'clusterBorder': '#000000',
-      'titleColor': '#000000',
-      'fontFamily': 'Courier New, Courier, monospace',
-      'noteBackgroundColor': '#ff9c9c',
-      'noteBorderColor': '#000000'
-    }
-  }
-}%%
-
-graph LR
-    subgraph Environment["Environment"]
-        DM[Direct Messages] & MC[Channel Messages] & FI[Files] -->|Input Event| AT[Attention]
 
 
-    subgraph Processing["Core Processing"]
-        AT -->|Parse| CP[Context Processing]
-        CP -->|Build Initial Context| WC[Working Context]
+# Features and Abilities
 
-        subgraph HPC["Hippocampal Formation"]
-            WC -->|Query| MI[Memory Index]
-            MI -->|Lookup| II[Inverted Index]
-            II -->|Retrieve and Score| CM[Candidate Memories]
-            CM -->|Rerank| RM[Relevant Memories]
-        end
-
-        subgraph AMG["Amygdala Complex"]
-            RM -->|Memory Density| MD[Memory Density]
-            MD -->|Arousal Level| AR[Arousal Response]
-            AR -->|Set Temp| TC[Temperature Control]
-        end
-
-         subgraph TI["Temporal Integration"]
-            WC & RM -->|Extract Time| TP[Temporal Parser]
-            TP -->|Format| TCC[Time Context]
-            TCC -->|Enrich| EWC[Enriched Working Context]
-        end
-    EWC & TC -->|Prompt| PC[Prompt Construction]
-    subgraph DMN["Default Mode Network"]
-        direction TB
-        MI[Memory Index] -->|Random Walk| RW[Random Walk]
-        RW -->|Select| SM[Seed Memory]
-        SM -->|Retrieve| RM2[Related Memories]
-        RM2 -->|Overlap Analysis| TO[Term Overlap]
-        TO -->|Prune| PR[Term Pruning]
-        PR -->|Update Weights| UW[Update Weights]
-        UW --> MI
-        RM2 --> DMN_WC
-        PR --> DMN_WC
-        DMN_WC[Prompt Context] -->|Thought Gen| TG[Thought Generation]
-        TG -->|New Memory| NM[New Memory]
-        NM -->|Store| MI
-    end
-    end
-
-
-    subgraph Response["LLM and Output"]
-        PC -->|LLM Call| LLM[Language Model]
-        LLM -->|Generate| RG[Response]
-        
-
-
-    end
-        
-        RG -->|Output| DR[Discord Response]
-    end
-    %% Feedback Loops (placed *before* class definitions for clarity)
-    DR -.->|Store Interaction| MI
-    AR -.->|Modulate| RG
-    MD -.->|Update| AR
-    UW -.-> MI
-
-    class DM,MC,FI,AT env
-    class CP,WC,PC,EWC process
-    class MI,II,CM,RM,MW,HPC hpc
-    class MD,AR,TC,AMG amg
-    class RW,SM,RM2,TO,PR,UW,DMN_WC,TG,NM,MI2 dmn
-    class TP,TCC TI
-    class LLM,RG,DR response
+```
+input → attention filter → hippocampal retrieval → reranking by embedding
+                                    ↓
+              context assembly ← temporal parsing ← conversation history
+                                    ↓
+                    amygdala samples arousal from memory density
+                                    ↓
+                         prompt construction → llm → response
+                                    ↓
+                    memory storage → thought generation → dmn integration
+                                    ↑
+              [background: dmn walks, prunes, dreams, forgets]
 ```
 
-# LLMs in Multi-User Chat
+## cognitive architecture
 
-Currently multi-turn/multi-user bots often exhibit confusion about their role and intent over time, large cloud models excel at grokking who they are and the masks they wear in conversation, while smaller open source models can collapse into mirroring the 'USER' after one turn. Managing an agentic prompt context remains a dark art... This cognitive framework is designed to be an "animated skeleton", where you can remove as many bones as you need to ensure even the smallest models maintain longterm coherence and shape without collapsing.  💀 
+- **default mode network** — background process performs associative memory walks, generates reflective thoughts, prunes term overlap between related memories, and manages graceful forgetting. the agent dreams between conversations.
+- **amygdala complex** — memory density modulates arousal which scales llm temperature dynamically. sparse context → careful, deterministic. rich context → creative, exploratory. emotional tone emerges from cognitive state.
+- **hippocampal formation** — hybrid retrieval blending inverted index with tf-idf scoring and embedding-based reranking at inference time. bandwidth adapts to arousal level for human-like recall under pressure.
+- **temporal integration** — timestamps parsed as natural language expressions ("yesterday morning", "last week") rather than raw datetime, giving the agent intuitive temporal reasoning about its memories.
 
-Update the `bot_config.py` when running on smaller or opensource models to avoid context rot. See the configuration docs for more details.
+## attention and engagement
+
+- **fuzzy topic matching** — attention triggers use semantic similarity against defined interests plus emergent themes mined from memory. agents join conversations that resonate with what's already on their mind.
+- **theme emergence** — preferences crystallize from interaction patterns. the agent develops interests it wasn't explicitly given, contributing to attention triggers organically.
+- **distributed homeostasis** — all modules regulate each other. attention depends on themes from memory. arousal depends on memory density. memory quality depends on dmn pruning. no central controller, just coupled oscillators.
+
+## context and memory
+
+- **channel vs dm siloing** — memories respect privacy boundaries. dm conversations stay private to that user. channel context stays scoped to that space. context switching handled intelligently.
+- **term pruning and decay** — overlapping terms between connected memories are removed during reflection, forcing specialization. memories with no remaining connections are forgotten. the index breathes.
+- **persistence** — pickled inverted index survives restarts. the agent wakes up remembering.
+
+## content ingestion
+
+- **web and youtube grokking** — shared links scraped and processed using holistic "skim" reading rather than narrow chunking. content understood in context, not fragments.
+- **file and image processing** — attachments analyzed with vision models when available. text files, code, images all flow into memory and context.
+- **github integration** — repository indexing, file-specific chat, and rag-style repo questions. code becomes part of the agent's extended mind.
+
+## discord-native design
+
+- **message conditioning** — username logic, mention handling, reaction tracking, chunking for discord limits, code block preservation. seamless integration without fighting the platform.
+- **multi-agent ready** — multiple bot instances with separate memory indices, api configurations, and personalities. they can coexist and potentially interact.
+- **graceful degradation** — kill/resume commands, processing toggles, attention on/off. operators maintain control without losing state.
+
+## observability
+
+- **dual logging** — jsonl for streaming analysis, sqlite for structured queries. every interaction, thought generation, and memory operation tracked.
+- **runtime adjustable** — temperature, reranking thresholds, attention sensitivity all tunable without restart. watch the agent shift in real time.
 
 
----
-
-<div align="center">
-
-<img src="docs/assests/pink_banner.png" alt="dm banner" width="75%" style="image-rendering: pixelated;">
-
-</div>
 
 ---
 
