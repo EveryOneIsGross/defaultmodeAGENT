@@ -34,9 +34,15 @@ class APIConfig(BaseModel):
 
 
 class FileConfig(BaseModel):
-    """File handling configuration"""
-    allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
-    allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
+    allowed_extensions: Set[str] = Field(default={'.py','.js','.html','.css','.json','.md','.txt'})
+    allowed_image_extensions: Set[str] = Field(default={'.jpg','.jpeg','.png','.gif','.bmp'})
+
+    # single source of truth
+    text_ingestion_mode: str = Field(default="hybrid")
+    truncate_length: int = Field(default=8000)
+    chronpress_threshold: int = Field(default=16000)
+    chronpress_target_chars: int = Field(default=8000)
+
 
 class SearchConfig(BaseModel):
     """Search and indexing configuration"""
@@ -46,10 +52,10 @@ class SearchConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
-    max_history: int = Field(default=24)
-    minimal_history: int = Field(default=6)
-    truncation_length: int = Field(default=512)
-    harsh_truncation_length: int = Field(default=128)
+    max_history: int = Field(default=32)
+    minimal_history: int = Field(default=12)
+    truncation_length: int = Field(default=768)
+    harsh_truncation_length: int = Field(default=256)
     web_content_truncation_length: int = Field(default=8000)
 
 class PersonaConfig(BaseModel):
@@ -57,7 +63,7 @@ class PersonaConfig(BaseModel):
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
     hippocampus_bandwidth: float = Field(default=0.70) 
-    memory_capacity: int = Field(default=30)
+    memory_capacity: int = Field(default=32)
     use_hippocampus_reranking: bool = Field(default=True)
     reranking_blend_factor: float = Field(default=0.5, description="Weight for blending initial search scores with reranking similarity (0-1)") 
     minimum_reranking_threshold: float = Field(default=0.64, description="Minimum threshold for reranked memories") 
@@ -80,7 +86,7 @@ class AttentionConfig(BaseModel):
     threshold: int = Field(default=60, description="Fuzzy match threshold for attention triggers (0-100)")
     default_top_n: int = Field(default=32, description="Default number of top trigrams to extract from memory")
     default_min_occ: int = Field(default=8, description="Minimum occurrence count for trigrams to be considered")
-    refresh_interval_hours: int = Field(default=2, description="Hours between trigram cache refreshes")
+    refresh_interval_hours: int = Field(default=24, description="Hours between trigram cache refreshes")
     cooldown_minutes: float = Field(default=0.30, description="Minutes between attention trigger activations")
 
     stop_words: Set[str] = Field(default_factory=lambda: {
@@ -118,7 +124,7 @@ class DMNConfig(BaseModel):
     """DMN configuration"""
     tick_rate: int = Field(default=1200, description="Time between thought generations in seconds")
     temperature: float = Field(default=0.7, description="Base creative temperature")
-    temperature_max: float = Field(default=1.5)
+    temperature_max: float = Field(default=1.8)
     combination_threshold: float = Field(default=0.2, description="Minimum relevance score for memory combinations")
     decay_rate: float = Field(default=0.1, description="Rate at which used memory weights decrease")
     top_k: int = Field(default=24, description="Top k memories to consider for combination")
@@ -132,15 +138,6 @@ class DMNConfig(BaseModel):
     dmn_api_type: str = Field(default=None, description="API type for DMN processor (ollama, openai, anthropic, etc.)")
     dmn_model: str = Field(default=None, description="Model name for DMN processor")
     
-    # Focus presets
-    consciousness_default: str = Field(default="creative")
-    consciousness_presets: Dict[str, Dict[str, float]] = Field(default_factory=lambda:{
-        "hyperfocus": {"temp_base":0.20,"temp_span":0.40, "p_sparse":0.80, "p_mid":0.65, "p_dense":0.50},      # low T + low p
-        "creative":   {"temp_base":0.80,"temp_span":0.70,"p_sparse":0.92,"p_mid":0.90,"p_dense":0.88},      # high T + low p
-        "drowsy":     {"temp_base":0.30,"temp_span":0.20,"p_sparse":0.99,"p_mid":0.985,"p_dense":0.98},     # low T + high p
-        "dream":      {"temp_base":0.90,"temp_span":0.80,"p_sparse":0.99,"p_mid":0.99,"p_dense":0.985}      # high T + high p
-    })
-
     # Memory presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
         "forgetful": {
