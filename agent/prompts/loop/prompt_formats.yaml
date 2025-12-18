@@ -55,8 +55,6 @@ analyze_file: |
   Content:
   {file_content}
 
-  User Message: {user_message}
-
   Please analyze this file:
   1. summarize key content
   2. identify important patterns or elements
