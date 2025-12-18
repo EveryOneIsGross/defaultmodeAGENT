@@ -30,6 +30,7 @@ import traceback
 from tools.discordSUMMARISER import ChannelSummarizer
 from tools.discordGITHUB import GitHubRepo, RepoIndex, process_repo_contents, repo_processing_event
 from tools.webSCRAPE import scrape_webpage
+from tools.chronpression import chronomic_filter
 # import memory module
 from memory import UserMemoryIndex, CacheManager
 from defaultmode import DMNProcessor
@@ -269,6 +270,22 @@ def build_conversation_context(formatted_msgs):
     ctx += "</conversation>\n"
     return ctx
 
+async def smart_compress_text(text: str) -> str:
+    target_chars = config.files.chronpress_target_chars
+    if len(text) <= target_chars:
+        return text
+    ratio = 1.0 - (target_chars / len(text)) + 0.05
+    compression = max(0.3, min(ratio, 0.90))
+    try:
+        return await asyncio.to_thread(
+            chronomic_filter,
+            text,
+            compression=compression,
+            fuzzy_strength=1.0
+        )
+    except Exception:
+        return text
+
 
 async def process_message(message, memory_index, prompt_formats, system_prompts, github_repo, is_command=False):
     """main message processing with parallel i/o and single history fetch"""
@@ -488,17 +505,30 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                         continue
                 elif is_potentially_text:
                     try:
-                        content_bytes = await attachment.read()
-                        text_content = content_bytes.decode('utf-8')
-                        text_contents.append({'filename': attachment.filename, 'content': text_content})
+                        content = (await attachment.read()).decode("utf-8")
+                        mode = config.files.text_ingestion_mode
+
+                        if mode == "truncate":
+                            if len(content) > config.files.truncate_length:
+                                content = content[:config.files.truncate_length]
+
+                        elif mode == "chronpress":
+                            if len(content) > config.files.chronpress_threshold:
+                                content = await smart_compress_text(content)
+
+                        elif mode == "hybrid":
+                            if len(content) > config.files.chronpress_threshold:
+                                content = await smart_compress_text(content)
+                            if len(content) > config.files.truncate_length:
+                                content = content[:config.files.truncate_length]
+
+                        text_contents.append({"filename": attachment.filename, "content": content})
                         processed_as_text = True
-                    except UnicodeDecodeError as e:
-                        bot.logger.error(f"Error decoding text file {attachment.filename}: {str(e)}")
-                        await message.channel.send(f"Warning: {attachment.filename} couldn't be decoded as UTF-8. Skipping.")
+
+                    except UnicodeDecodeError:
                         continue
-                    except Exception as e:
-                        bot.logger.error(f"Error reading text file {attachment.filename}: {str(e)}")
-                        continue
+
+
                 else:
                     await message.channel.send(f"Skipping {attachment.filename} - unsupported type. Supported types: {', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS)}")
                     continue
