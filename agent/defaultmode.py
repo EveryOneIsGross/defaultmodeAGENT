@@ -58,15 +58,8 @@ class DMNProcessor:
         # DMN-specific API settings
         self.dmn_api_type = dmn_api_type
         self.dmn_model = dmn_model
-        # Consciousness settings
-        self.temperature_max=dmn_config.temperature_max
-        self.consciousness_state=dmn_config.consciousness_default
-        self.consciousness_presets=dmn_config.consciousness_presets
 
         self.logger.info(f"DMN Processor initialized with API: {dmn_api_type or 'default'}, Model: {dmn_model or 'default'}")
-
-    def set_consciousness(self,name:str): 
-        if name in self.consciousness_presets: self.consciousness_state=name
 
     async def start(self):
         """Start the DMN processing loop."""
