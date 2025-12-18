@@ -6,8 +6,10 @@ from typing import List, Tuple
 import aiohttp
 import openai
 import anthropic
+
 from google import genai
 from google.genai import types
+import mimetypes
 
 from PIL import Image
 from dotenv import load_dotenv
@@ -53,6 +55,7 @@ def build_chat_messages(system: str, context: str, user_content):
     msgs.append({"role": "user", "content": user_content})
     return msgs
 
+# embarassing code for gpt5 detection to ignore temp/top_p settings
 def _is_gpt5(name: str | None) -> bool:
     return (name or "").lower().startswith("gpt-5")
 
@@ -111,7 +114,7 @@ def get_api_config(api_type: str, model_override: str | None = None) -> Provider
                               model_name=model_override or os.getenv("VLLM_MODEL_NAME","google/gemma-3-4b-it"))
     if api_type == "gemini":
         return ProviderConfig(api_key=_require_env("GEMINI_API_KEY"),
-                              model_name=model_override or os.getenv("GEMINI_MODEL_NAME","gemini-2.5-flash"))
+                              model_name=model_override or os.getenv("GEMINI_MODEL_NAME","gemini-3-flash-preview"))
     if api_type == "openrouter":
         return ProviderConfig(api_base="https://openrouter.ai/api/v1",
                               api_key=_require_env("OPENROUTER_API_KEY"),
@@ -223,7 +226,7 @@ async def call_api(prompt: str, *, context: str = "", system_prompt: str = "",
     })
     return response
 
-# ─────────────────────── provider-specific implementations ─────────────────
+# ─────────────────────── openai ─────────────────
 async def _call_openai(content, *, system_prompt, context,
                        temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
     client = openai.AsyncOpenAI(api_key=config.api_key)
@@ -235,6 +238,7 @@ async def _call_openai(content, *, system_prompt, context,
     res = await client.chat.completions.create(**kwargs)
     return res.choices[0].message.content.strip()
 
+# ─────────────────────── ollama ─────────────────
 async def _call_ollama(content, *, system_prompt, context,
                        temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
     client = openai.AsyncOpenAI(base_url=f'{config.api_base}/v1', api_key="ollama")
@@ -245,6 +249,7 @@ async def _call_ollama(content, *, system_prompt, context,
         frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
     return res.choices[0].message.content.strip()
 
+# ─────────────────────── anthropic ─────────────────
 async def _call_anthropic(content, *, system_prompt, context,
                           temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
     client = anthropic.AsyncAnthropic(api_key=config.api_key)
@@ -286,22 +291,28 @@ async def _call_openrouter(content, *, system_prompt, context,
         presence_penalty=presence_penalty)
     return res.choices[0].message.content.strip()
 
-async def _call_gemini(content,*,system_prompt,context,temperature,top_p,frequency_penalty,presence_penalty,config: ProviderConfig):
-    client = genai.Client(api_key=config.api_key)
-    sys = "\n\n".join([s for s in (system_prompt,context) if s])
-    if isinstance(content,list): utext,imgs=(content[0],content[1:])
-    else: utext,imgs=(str(content),[])
-    parts=[types.Part.from_text(text=utext)]+[types.Part.from_image(image=i) for i in imgs]
-    cfg=types.GenerateContentConfig(system_instruction=(sys or None),
-                                    temperature=temperature, top_p=top_p, top_k=64,
-                                    max_output_tokens=8192, response_mime_type="text/plain")
-    r=await asyncio.to_thread(client.models.generate_content,
-                              model=config.model_name,
-                              contents=[types.Content(role="user",parts=parts)],
-                              config=cfg)
-    return r.text.strip()
+# ─────────────────────── gemini ─────────────────
+def _mime(p): return mimetypes.guess_type(p)[0] or "image/jpeg"
 
-# ─────────────────────── embeddings helper (unchanged) ────────────────────
+def _gemini_parts_from_paths(paths):
+  ps=[]
+  for p in paths:
+    b=open(p,"rb").read()
+    ps.append(types.Part.from_bytes(data=b,mime_type=_mime(p)))
+  return ps
+
+async def _call_gemini(content,*,system_prompt,context,temperature,top_p,frequency_penalty,presence_penalty,config):
+  client=genai.Client(api_key=config.api_key)
+  sys="\n\n".join([s for s in (system_prompt,context) if s]) or None
+  if isinstance(content,list): utext,imgs=content[0],content[1:]
+  else: utext,imgs=str(content),[]
+  paths=[getattr(i,"filename",None) for i in imgs]
+  parts=_gemini_parts_from_paths(paths) if paths and all(paths) else list(imgs)
+  cfg=types.GenerateContentConfig(system_instruction=sys,temperature=temperature,top_p=top_p,top_k=64,max_output_tokens=8192,response_mime_type="text/plain")
+  r=await asyncio.to_thread(client.models.generate_content,model=config.model_name,contents=[*parts,utext],config=cfg)
+  return r.text.strip()
+
+# ─────────────────────── embeddings helper ────────────────────
 async def get_embeddings(text: str | list[str],
                          provider: str | None = None,
                          model: str | None = None,
