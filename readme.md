@@ -14,8 +14,6 @@ local-first, model-agnostic. works with ollama, openai, anthropic, vllm, gemini.
 
 not just another chatbot framework. a framework for entities that persist.
 
-[UPDATES](docs/updates.md)
-
 ----
 
 # why defaultMODE?
