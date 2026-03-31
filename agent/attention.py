@@ -1,6 +1,6 @@
 from typing import List, Tuple, Dict
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re, logging, threading, itertools, os, json, pickle, time
 from fuzzywuzzy import fuzz
 from bot_config import config
@@ -8,16 +8,16 @@ from bot_config import config
 logger=logging.getLogger(__name__)
 
 _TRIGRAM_CACHE:List[str]=[]
-_CACHE_EXPIRES:datetime=datetime.min
+_CACHE_EXPIRES:datetime=datetime.min.replace(tzinfo=timezone.utc)
 _REFRESHING=False
 _LOCK=threading.Lock()
 _USER_THEME_CACHE:Dict[str,List[str]]=defaultdict(list)
-_USER_EXPIRES:Dict[str,datetime]=defaultdict(lambda:datetime.min)
+_USER_EXPIRES:Dict[str,datetime]=defaultdict(lambda:datetime.min.replace(tzinfo=timezone.utc))
 _USER_REFRESHING:Dict[str,bool]=defaultdict(bool)
-_LAST_TRIGGER_TIME:datetime=datetime.min
-_LAST_TRIGGER_TIME_BY_USER:Dict[str,datetime]=defaultdict(lambda:datetime.min)
+_LAST_TRIGGER_TIME:datetime=datetime.min.replace(tzinfo=timezone.utc)
+_LAST_TRIGGER_TIME_BY_USER:Dict[str,datetime]=defaultdict(lambda:datetime.min.replace(tzinfo=timezone.utc))
 
-def format_themes_for_prompt(mi,uid:str,spike:bool=False,k_user:int=12,k_global:int=8,mode:str="sections")->str:
+def format_themes_for_prompt(mi,uid:str,spike:bool=False,k_user:int=12,k_global:int=8,mode:str="just_user")->str:
     ut=get_user_themes(mi,uid) if uid else []
     gt=get_current_themes(mi)
     if spike:k_user*=2
@@ -114,7 +114,7 @@ def _load_global(mi)->bool:
         th=list(th or []);upd=float(meta.get('updated_at_epoch',0))
         with _LOCK:
             _TRIGRAM_CACHE=th
-            _CACHE_EXPIRES=(datetime.utcfromtimestamp(upd)+config.attention.refresh_interval if upd>0 else datetime.min)
+            _CACHE_EXPIRES=(datetime.fromtimestamp(upd, tz=timezone.utc)+config.attention.refresh_interval if upd>0 else datetime.min.replace(tzinfo=timezone.utc))
         logger.info(f"Loaded global themes: {len(_TRIGRAM_CACHE)}")
         return True
     except Exception as e:
@@ -129,7 +129,7 @@ def _save_global(mi,themes:list):
     old=set(_TRIGRAM_CACHE);new=set(themes)
     with _LOCK:
         _TRIGRAM_CACHE=list(themes)
-        _CACHE_EXPIRES=datetime.utcnow()+config.attention.refresh_interval
+        _CACHE_EXPIRES=datetime.now(timezone.utc)+config.attention.refresh_interval
     logger.info(f"GLOBAL THEMES REFRESHED: {len(themes)}")
     logger.info(f"Next refresh: {_CACHE_EXPIRES.strftime('%H:%M:%S')}")
     if themes: logger.info(f"Top themes: {themes}")
@@ -146,7 +146,7 @@ def _load_user(mi,uid:str)->bool:
         with open(mp,'r',encoding='utf-8') as m: meta=json.load(m)
         _USER_THEME_CACHE[uid]=list(th or [])
         upd=float(meta.get('updated_at_epoch',0))
-        _USER_EXPIRES[uid]=(datetime.utcfromtimestamp(upd)+config.attention.refresh_interval if upd>0 else datetime.min)
+        _USER_EXPIRES[uid]=(datetime.fromtimestamp(upd, tz=timezone.utc)+config.attention.refresh_interval if upd>0 else datetime.min.replace(tzinfo=timezone.utc))
         logger.info(f"Loaded user themes for {uid}: {len(_USER_THEME_CACHE[uid])}")
         return True
     except Exception as e:
@@ -159,7 +159,7 @@ def _save_user(mi,uid:str,themes:list):
     with open(mp,'w',encoding='utf-8') as m: json.dump({'updated_at_epoch':time.time(),'count':len(themes)},m)
     old=set(_USER_THEME_CACHE[uid]);new=set(themes)
     _USER_THEME_CACHE[uid]=list(themes)
-    _USER_EXPIRES[uid]=datetime.utcnow()+config.attention.refresh_interval
+    _USER_EXPIRES[uid]=datetime.now(timezone.utc)+config.attention.refresh_interval
     logger.info(f"USER THEMES REFRESHED [{uid}]: {len(themes)}")
     logger.info(f"Next refresh: {_USER_EXPIRES[uid].strftime('%H:%M:%S')}")
     if themes: logger.info(f"Top themes: {themes[:3]}")
@@ -170,7 +170,7 @@ def _save_user(mi,uid:str,themes:list):
 
 def _maybe_refresh_global(mi):
     global _REFRESHING
-    if datetime.utcnow()<_CACHE_EXPIRES:return
+    if datetime.now(timezone.utc)<_CACHE_EXPIRES:return
     with _LOCK:
         if _REFRESHING:
             logger.debug("Global refresh in progress");return
@@ -190,7 +190,7 @@ def _maybe_refresh_global(mi):
     threading.Thread(target=worker,daemon=True).start()
 
 def _maybe_refresh_user(mi,uid:str):
-    if datetime.utcnow()<_USER_EXPIRES[uid]:return
+    if datetime.now(timezone.utc)<_USER_EXPIRES[uid]:return
     if _USER_REFRESHING[uid]:
         logger.debug(f"User refresh for {uid} in progress");return
     _USER_REFRESHING[uid]=True
@@ -219,7 +219,7 @@ def check_attention_triggers_fuzzy(content:str,persona_triggers:List[str],thresh
     if top_n is None: top_n=config.attention.default_top_n
     if cooldown is None: cooldown=config.attention.cooldown
     if not content:return False
-    now=datetime.utcnow()
+    now=datetime.now(timezone.utc)
     if user_id:
         if now-_LAST_TRIGGER_TIME_BY_USER[user_id]<cooldown:return False
     else:
@@ -284,10 +284,10 @@ def force_rebuild_user_theme_cache(memory_index,user_id:str)->List[str]:
 
 def invalidate_global_cache():
     global _TRIGRAM_CACHE,_CACHE_EXPIRES,_REFRESHING
-    _TRIGRAM_CACHE=[];_CACHE_EXPIRES=datetime.min;_REFRESHING=False
+    _TRIGRAM_CACHE=[];_CACHE_EXPIRES=datetime.min.replace(tzinfo=timezone.utc);_REFRESHING=False
 
 def invalidate_user_cache(user_id:str):
-    _USER_THEME_CACHE.pop(user_id,None);_USER_EXPIRES[user_id]=datetime.min;_USER_REFRESHING[user_id]=False
+    _USER_THEME_CACHE.pop(user_id,None);_USER_EXPIRES[user_id]=datetime.min.replace(tzinfo=timezone.utc);_USER_REFRESHING[user_id]=False
 
 def purge_theme_cache(memory_index,user_id:str=None):
     if user_id is None:

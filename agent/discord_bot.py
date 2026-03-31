@@ -1,27 +1,29 @@
 #discord
 import discord
-from discord import TextChannel
 from discord.ext import commands
+from discord.ext.commands.view import StringView
 # standard libraries
 import asyncio
 import os
 import contextvars
-import requests
-from requests.exceptions import RequestException, Timeout, SSLError
-from bs4 import BeautifulSoup
 import mimetypes
-import json
 import yaml
 from datetime import datetime
-import time
 import argparse
 import threading
 import re
 import importlib.util
 import sys
 # api import and hyperparameter handlers
-from api_client import initialize_api_client, call_api, update_api_temperature, api
 from hippocampus import Hippocampus, HippocampusConfig
+from context import (
+    fetch_history_with_reactions,
+    process_history_dual,
+    build_memory_context,
+    build_conversation_context,
+    get_or_create_hippocampus,
+    rerank_if_enabled
+)
 # image handling
 from PIL import Image
 import io
@@ -38,20 +40,14 @@ from chunker import truncate_middle, clean_response, balance_wraps
 from temporality import TemporalParser
 # Discord Format Handling
 from discord_utils import sanitize_mentions, format_discord_mentions
-from attention import check_attention_triggers_fuzzy, get_user_themes, get_current_themes, force_rebuild_theme_cache, force_rebuild_user_theme_cache, _get_user_count, format_themes_for_prompt
+from attention import check_attention_triggers_fuzzy, get_current_themes, format_themes_for_prompt
+# Action generation
+from spike import SpikeProcessor
 # Configuration imports
 from bot_config import (
     config,
-    APIConfig,
-    DiscordConfig,
-    FileConfig,
-    SearchConfig,
-    ConversationConfig,
-    PersonaConfig,
-    NotionConfig,
-    SystemConfig,
-    BotConfig,
-    init_logging
+    init_logging,
+    apply_overrides,
 )
 # libraries logging import for jsonl, sqlite and info logging
 from logger import BotLogger
@@ -65,7 +61,8 @@ _themes_ctx = contextvars.ContextVar('themes_ctx', default={})
 def format_themes_for_prompt_memoized(mi, uid, mode="just_user"):
     d=_themes_ctx.get()
     k=(uid,mode)
-    if k in d:return d[k]
+    if k in d:
+        return d[k]
     s=format_themes_for_prompt(mi,uid,mode=mode)
     d[k]=s
     _themes_ctx.set(d)
@@ -110,7 +107,7 @@ def log_to_jsonl(data, bot_id=None):
 def update_temperature(intensity: int) -> None:
     """Update the bot's temperature based on intensity value. Manages Amagdala response and API client temperature/top p."""
     TEMPERATURE = intensity / 100.0
-    bot.update_api_temperature(intensity)
+    bot.update_api_temperature(TEMPERATURE)
     if hasattr(bot, 'dmn_processor') and bot.dmn_processor:
         bot.dmn_processor.amygdala_response = intensity
         bot.dmn_processor.temperature = TEMPERATURE
@@ -146,108 +143,57 @@ async def maintain_typing_state(channel):
     except Exception as e:
         bot.logger.debug(f"Typing state maintenance ended: {str(e)}")
 
-async def fetch_history_with_reactions(channel, limit, skip_id=None):
-    """fetch history and reaction data without mutating Message objects"""
-    msgs = []
-    reactions_map = {}  # msg.id -> {emoji: [usernames]}
-    
-    async for msg in channel.history(limit=limit):
-        if skip_id and msg.id == skip_id:
-            continue
-        msgs.append(msg)
-        if msg.reactions:
-            reactions_map[msg.id] = {}
-            for rxn in msg.reactions:
-                users = [u async for u in rxn.users()]
-                reactions_map[msg.id][str(rxn.emoji)] = [u.name for u in users]
-    
-    return msgs, reactions_map
 
-
-def process_history_dual(msgs, reactions_map, temporal_parser, truncation_len, harsh_truncation_len=None):
-    """single pass over history → two outputs"""
-    simple_lines = []
-    formatted_list = []
-    trunc_len = harsh_truncation_len or truncation_len
-    
-    for msg in msgs:
-        name = msg.author.name
-        mentions = list(msg.mentions) + list(msg.channel_mentions) + list(msg.role_mentions)
-        sanitized = sanitize_mentions(msg.content, mentions)
-        simple_lines.append(f"@{name}: {sanitized}")
-        truncated = truncate_middle(sanitized, max_tokens=trunc_len)
-        local_ts = msg.created_at.astimezone().replace(tzinfo=None)
-        ts_str = local_ts.strftime("%H:%M [%d/%m/%y]")
-        temporal = temporal_parser.get_temporal_expression(ts_str)
-        formatted = f"@{name} ({temporal.base_expression}): {truncated}"
-        
-        # look up reactions from separate map
-        msg_reactions = reactions_map.get(msg.id, {})
-        if msg_reactions:
-            rxn_parts = [f"@{u}: {emoji}" for emoji, users in msg_reactions.items() for u in users]
-            if rxn_parts:
-                formatted += f"\n(Discord User Reactions: {' '.join(rxn_parts)})"
-        
-        formatted_list.append(formatted)
-    
-    simple_lines.reverse()
-    formatted_list.reverse()
-    return '\n'.join(simple_lines), formatted_list
-
-async def extract_content_and_reply(message, is_command, bot_id=None):
-    """extract user content, handle reply context, return (content, reply_context)"""
+async def extract_content_and_reply(message, is_command, bot=None):
+    """extract user content, handle reply context, return (content, reply_context, reply_attachments)"""
     reply_context = None
+    reply_attachments = []
+    
     if is_command:
         parts = message.content.split(maxsplit=1)
-        return (parts[1] if len(parts) > 1 else "", None)
+        return (parts[1] if len(parts) > 1 else "", None, [])
+    
     if message.guild and message.guild.me:
         content = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
     else:
         content = message.content.strip()
+    
     if message.reference:
         try:
             original = await message.channel.fetch_message(message.reference.message_id)
             original_content = original.content.strip()
+            
+            if original.attachments:
+                for att in original.attachments:
+                    ext = os.path.splitext(att.filename.lower())[1]
+                    is_image = att.content_type and att.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS
+                    is_text = ext in ALLOWED_EXTENSIONS
+                    if is_image or is_text:
+                        reply_attachments.append(att)
+            
             if original_content:
                 for m in original.mentions:
                     original_content = original_content.replace(f'<@{m.id}>', f'@{m.name}').replace(f'<@!{m.id}>', f'@{m.name}')
                 for ch in original.channel_mentions:
                     original_content = original_content.replace(f'<#{ch.id}>', f'#{ch.name}')
                 reply_context = original_content
-                content = f"[@{message.author.name} replying to @{original.author.name}: {original_content}]\n\n@{message.author.name}: {content}"
+                content = f"[@{message.author.name} replying to @{original.author.name}'s message: {original_content}]\n\n@{message.author.name}: {content}"
         except (discord.NotFound, discord.Forbidden):
             pass
-    return content, reply_context
+    
+    return content, reply_context, reply_attachments
 
-async def get_or_create_hippocampus(bot):
-    """lazy init hippocampus per bot instance"""
-    if not hasattr(bot, '_hippocampus') or bot._hippocampus is None:
-        bot._hippocampus = Hippocampus(HippocampusConfig(blend_factor=config.persona.reranking_blend_factor))
-    return bot._hippocampus
-
-def build_memory_context(relevant_memories, temporal_parser, truncation_len):
-    """format memories with temporal parsing"""
-    if not relevant_memories:
-        return ""
-    ctx = f"{len(relevant_memories)} Potentially Relevant Memories:\n<memories>\n"
-    timestamp_pattern = r'\((\d{2}):(\d{2})\s*\[(\d{2}/\d{2}/\d{2})\]\)'
-    for memory, score in relevant_memories:
-        parsed = re.sub(
-            timestamp_pattern,
-            lambda m: f"({temporal_parser.get_temporal_expression(datetime.strptime(f'{m.group(1)}:{m.group(2)} {m.group(3)}', '%H:%M %d/%m/%y')).base_expression})",
-            memory
-        )
-        truncated = truncate_middle(parsed, max_tokens=truncation_len)
-        ctx += f"[Relevance: {score:.2f}] {truncated}\n"
-    ctx += "</memories>\n\n"
-    return ctx
 
 def build_url_context(url_results, truncation_len):
-    """format scraped url content"""
+    """format scraped url content and collect image paths"""
     contents = []
     errors = []
+    image_paths = []
     for data in url_results:
         ctype = data.get('content_type', 'none')
+        # Collect image paths from scraped results
+        if data.get('image_paths'):
+            image_paths.extend(data['image_paths'])
         if ctype not in ('error', 'none', 'html_preview'):
             contents.append(f"URL Content: {data['url']}\nTitle: {data['title']}\nDescription: {data['description']}\n\nContent:\n{data['content']}")
         elif ctype == 'html_preview' and data.get('content'):
@@ -255,20 +201,13 @@ def build_url_context(url_results, truncation_len):
         elif ctype == 'none':
             errors.append((data['url'], data.get('description') or 'Could not fetch content'))
     if not contents:
-        return "", errors
+        return "", errors, image_paths
     ctx = "\nWeb Page Content:\n<web_content>\n"
     for c in contents:
         ctx += f"{truncate_middle(c, max_tokens=truncation_len)}\n"
     ctx += "</web_content>\n\n"
-    return ctx, errors
+    return ctx, errors, image_paths
 
-def build_conversation_context(formatted_msgs):
-    """wrap formatted messages in conversation tags"""
-    ctx = "**Ongoing Channel Conversation:**\n\n<conversation>\n"
-    for msg in formatted_msgs:
-        ctx += f"{msg}\n"
-    ctx += "</conversation>\n"
-    return ctx
 
 async def smart_compress_text(text: str) -> str:
     target_chars = config.files.chronpress_target_chars
@@ -292,7 +231,6 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
     bot.logger.debug(f"Processing message from {message.author.name}")
     
     if not getattr(bot, 'processing_enabled', True):
-        await message.channel.send("BBL... ☕")
         return
     
     user_id = str(message.author.id)
@@ -301,7 +239,28 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
     
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
     is_first_interaction = not bool(memory_index.user_memories.get(user_id, []))
-    content, reply_context = await extract_content_and_reply(message, is_command)
+    content, reply_context, reply_attachments = await extract_content_and_reply(message, is_command, bot)
+    
+    all_attachments = list(message.attachments) + reply_attachments
+    has_supported_files = False
+    for att in all_attachments:
+        ext = os.path.splitext(att.filename.lower())[1]
+        if (ext in ALLOWED_EXTENSIONS) or (att.content_type and att.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS):
+            has_supported_files = True
+            break
+    
+    if has_supported_files:
+        await process_files(
+            message=message,
+            memory_index=memory_index,
+            prompt_formats=prompt_formats,
+            system_prompts=system_prompts,
+            user_message=content,
+            bot=bot,
+            attachments=all_attachments
+        )
+        return
+    
     combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
     sanitized_content = sanitize_mentions(content, combined_mentions)
     
@@ -316,7 +275,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         
         history_task = asyncio.create_task(fetch_history_with_reactions(message.channel, MAX_CONVERSATION_HISTORY, skip_id=message.id))
         memory_task = asyncio.create_task(memory_index.search_async(search_query, k=MEMORY_CAPACITY, user_id=(user_id if is_dm else None)))
-        url_tasks = [asyncio.create_task(scrape_webpage(url)) for url in urls]
+        url_tasks = [asyncio.create_task(scrape_webpage(url, cache=bot.cache, user_id=user_id)) for url in urls]
         
         history_result, candidate_memories = await asyncio.gather(history_task, memory_task)
         history_msgs, reactions_map = history_result
@@ -324,17 +283,7 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         
         simple_ctx, formatted_msgs = process_history_dual(history_msgs, reactions_map, bot.temporal_parser, TRUNCATION_LENGTH)
         
-        if candidate_memories and config.persona.use_hippocampus_reranking:
-            hippocampus = await get_or_create_hippocampus(bot)
-            amygdala_scale = bot.amygdala_response / 100.0
-            threshold = max(config.persona.minimum_reranking_threshold, HIPPOCAMPUS_BANDWIDTH - (MOOD_COEFF * amygdala_scale))
-            bot.logger.info(f"Memory reranking threshold: {threshold:.3f} (bandwidth: {HIPPOCAMPUS_BANDWIDTH}, amygdala: {bot.amygdala_response}%, influence: {MOOD_COEFF * amygdala_scale:.3f})")
-            relevant_memories = await hippocampus.rerank_memories(query=search_query, memories=candidate_memories, threshold=threshold, blend_factor=config.persona.reranking_blend_factor)
-            bot.logger.info(f"Found {len(relevant_memories)} memories above threshold {threshold:.3f}")
-        else:
-            relevant_memories = candidate_memories or []
-            if relevant_memories:
-                bot.logger.info(f"Using memories without reranking: {len(relevant_memories)} memories")
+        relevant_memories = await rerank_if_enabled(bot, candidate_memories, search_query, logger=bot.logger)
         
         if hasattr(message.channel, 'name'):
             context = f"Current Discord server: {message.guild.name}, channel: #{message.channel.name}\n"
@@ -343,26 +292,33 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         
         context += build_memory_context(relevant_memories, bot.temporal_parser, TRUNCATION_LENGTH)
         
-        url_ctx, url_errors = build_url_context(url_results, WEB_CONTENT_TRUNCATION_LENGTH)
+        url_ctx, url_errors, url_image_paths = build_url_context(url_results, WEB_CONTENT_TRUNCATION_LENGTH)
         for url, err in url_errors:
             await message.channel.send(f"Error scraping URL {url}: {err}")
         context += url_ctx
-        
+
         context += build_conversation_context(formatted_msgs)
-        
+
         prompt_key = 'introduction' if is_first_interaction else 'chat_with_memory'
         prompt = prompt_formats[prompt_key].format(
             context=sanitize_mentions(context, combined_mentions),
             user_name=user_name,
             user_message=sanitize_mentions(sanitized_content, combined_mentions)
         )
-        
+
         themes = format_themes_for_prompt_memoized(bot.memory_index, user_id, mode="sections")
         system_prompt = system_prompts['default_chat'].replace('{amygdala_response}', str(bot.amygdala_response)).replace('{themes}', themes)
-        
+
         typing_task = asyncio.create_task(maintain_typing_state(message.channel))
         try:
-            response_content = await bot.call_api(prompt, context=context, system_prompt=system_prompt, temperature=bot.amygdala_response/100)
+            # Pass image paths from scraped URLs to the API for vision processing
+            response_content = await bot.call_api(
+                prompt,
+                context=context,
+                system_prompt=system_prompt,
+                temperature=bot.amygdala_response/100,
+                image_paths=url_image_paths if url_image_paths else None
+            )
             response_content = clean_response(response_content)
         finally:
             typing_task.cancel()
@@ -370,10 +326,13 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
         if response_content:
             formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
             await send_long_message(message.channel, formatted_content, bot=bot)
-            
+            if hasattr(bot, 'spike_processor') and bot.spike_processor:
+                bot.spike_processor.log_engagement(message.channel.id)
+            await invoke_embedded_commands(response_content, message, bot)
+
             timestamp = currentmoment()
             channel_name = message.channel.name if hasattr(message.channel, 'name') else 'DM'
-            
+
             if hasattr(message.channel, 'name'):
                 memory_text = f"@{user_name} in {message.guild.name} #{channel_name} ({timestamp}): {sanitize_mentions(sanitized_content, combined_mentions)}\n@{bot.user.name}: {response_content}"
             else:
@@ -419,7 +378,8 @@ async def process_message(message, memory_index, prompt_formats, system_prompts,
             'error': str(e)
         }, bot_id=bot.user.name)
 
-async def process_files(message, memory_index, prompt_formats, system_prompts, user_message="", bot=None, temperature=TEMPERATURE):
+
+async def process_files(message, memory_index, prompt_formats, system_prompts, user_message="", bot=None, temperature=TEMPERATURE, attachments=None):
     """file processing with parallel url scraping and single history fetch"""
     if not getattr(bot, 'processing_enabled', True):
         await message.channel.send("Processing currently disabled.")
@@ -428,20 +388,25 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     user_id = str(message.author.id)
     user_name = message.author.name
     
+    attachments = attachments if attachments is not None else list(message.attachments)
+    
     urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message.content)
-    if not message.attachments and not urls:
+    if not attachments and not urls:
         await message.channel.send("No attachments or URLs found.")
         return
     
-    if message.guild and message.guild.me:
-        user_message = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
+    if not user_message:
+        if message.guild and message.guild.me:
+            user_message = message.content.replace(f'<@!{message.guild.me.id}>', '').replace(f'<@{message.guild.me.id}>', '').strip()
+        else:
+            user_message = message.content.strip()
     combined_mentions = list(message.mentions) + list(message.channel_mentions) + list(message.role_mentions)
     user_message = sanitize_mentions(user_message, combined_mentions)
     
-    bot.logger.info(f"Processing {len(message.attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
+    bot.logger.info(f"Processing {len(attachments)} files from {user_name} (ID: {user_id}) with message: {user_message}")
     
     history_task = asyncio.create_task(fetch_history_with_reactions(message.channel, MINIMAL_CONVERSATION_HISTORY, skip_id=message.id))
-    url_tasks = [asyncio.create_task(scrape_webpage(url)) for url in urls]
+    url_tasks = [asyncio.create_task(scrape_webpage(url, cache=bot.cache, user_id=user_id)) for url in urls]
     
     image_files = []
     text_contents = []
@@ -450,7 +415,7 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
     has_text = False
     
     try:
-        for attachment in message.attachments:
+        for attachment in attachments:
             ext = os.path.splitext(attachment.filename.lower())[1]
             is_potentially_image = (attachment.content_type and attachment.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS)
             is_potentially_text = ext in ALLOWED_EXTENSIONS
@@ -528,7 +493,6 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     except UnicodeDecodeError:
                         continue
 
-
                 else:
                     await message.channel.send(f"Skipping {attachment.filename} - unsupported type. Supported types: {', '.join(ALLOWED_EXTENSIONS | ALLOWED_IMAGE_EXTENSIONS)}")
                     continue
@@ -559,6 +523,13 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         
         for data in url_results:
             ctype = data.get('content_type', 'none')
+            # Collect image paths from scraped URLs
+            if data.get('image_paths'):
+                for img_path in data['image_paths']:
+                    if img_path and img_path not in temp_paths:
+                        temp_paths.append(img_path)
+                        image_files.append(os.path.basename(img_path))
+                        has_images = True
             if ctype not in ('error', 'none'):
                 text_contents.append({
                     'filename': f"webpage_{data['title']}",
@@ -633,7 +604,10 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
         if response_content:
             formatted_content = format_discord_mentions(response_content, message.guild, bot.mentions_enabled, bot)
             await send_long_message(message.channel, formatted_content, bot=bot)
-            
+            if hasattr(bot, 'spike_processor') and bot.spike_processor:
+                bot.spike_processor.log_engagement(message.channel.id)
+            await invoke_embedded_commands(response_content, message, bot)
+
             files_description = []
             if image_files:
                 files_description.append(f"{len(image_files)} images: {', '.join(image_files)}")
@@ -654,10 +628,20 @@ async def process_files(message, memory_index, prompt_formats, system_prompts, u
                     file_context += f"--- {file_data['filename']} ---\n{truncated_content}\n\n"
             if image_files:
                 file_context += f"Images analyzed: {', '.join(image_files)}\n"
-            
+
+            # Capture the specific paths to clean up - don't use force=True which nukes ALL temp files
+            paths_to_cleanup = list(temp_paths) if temp_paths else []
             def cleanup_temp_files():
-                bot.cache.cleanup_temp_files(force=True)
-            
+                for p in paths_to_cleanup:
+                    try:
+                        if os.path.exists(p):
+                            os.remove(p)
+                        meta_path = f"{p}.meta"
+                        if os.path.exists(meta_path):
+                            os.remove(meta_path)
+                    except Exception as e:
+                        bot.logger.debug(f"temp.cleanup.specific path={p} err={e}")
+
             asyncio.create_task(generate_and_save_thought(
                 memory_index=memory_index,
                 user_id=user_id,
@@ -691,8 +675,6 @@ async def send_long_message(channel: discord.TextChannel, text: str, max_length=
     '''Send a long message to a Discord channel, splitting it into chunks if necessary while preserving formatting.'''
     if not text:
         return
-    guild = getattr(channel, 'guild', None)
-    is_dm = isinstance(channel, discord.DMChannel)
     formatted_text = text
     segments = []
     lines = formatted_text.split('\n')
@@ -890,6 +872,126 @@ def sanitize_filename(filename: str) -> str:
     sanitized = os.path.basename(sanitized)
     return sanitized
 
+class FakeMessage:
+    """Creates a fake Discord message for bot self-invocation."""
+    def __init__(self, original, bot, content):
+        # copy only what's needed
+        self._state = original._state
+        self.id = original.id
+        self.channel = original.channel
+        self.guild = getattr(original, 'guild', None)
+        # override for self-invoke
+        self.author = bot.user
+        self.content = content
+        self.mentions = []
+        self.channel_mentions = []
+        self.role_mentions = []
+        self.attachments = []
+        self.reference = None
+        self.interaction_metadata = None
+
+async def invoke_embedded_commands(response_content: str, message, bot) -> None:
+    """Scan response for whitelisted commands and invoke them."""
+    whitelist = config.discord.bot_action_commands
+    for line in response_content.split('\n'):
+        line = line.strip()
+        if not line.startswith('!'):
+            continue
+        parts = line[1:].split(None, 1)
+        if not parts:
+            continue
+        cmd_name = parts[0]
+        cmd_args = parts[1] if len(parts) > 1 else ''
+        if cmd_name not in whitelist:
+            continue
+        cmd = bot.get_command(cmd_name)
+        if not cmd:
+            bot.logger.warning(f"self-invoke: command '{cmd_name}' not found")
+            continue
+        bot.logger.info(f"self-invoke: !{cmd_name} args='{cmd_args}'")
+        try:
+            fake_msg = FakeMessage(message, bot, f"!{cmd_name} {cmd_args}")
+            ctx = await bot.get_context(fake_msg)
+            ctx.command = cmd
+            ctx.invoked_with = cmd_name
+            ctx.prefix = '!'
+            ctx.view = StringView(cmd_args)
+            await cmd.invoke(ctx)
+        except Exception as e:
+            bot.logger.error(f"self-invoke failed: {e}")
+
+class CustomHelpCommand(commands.HelpCommand):
+    async def send_bot_help(self, mapping):
+        bot = self.context.bot
+        is_self = self.context.author.id == bot.user.id
+        
+        is_manager = False
+        if not is_self:
+            try:
+                if isinstance(self.context.channel, discord.DMChannel):
+                    for guild in bot.guilds:
+                        member = guild.get_member(self.context.author.id)
+                        if member and (member.guild_permissions.administrator or member.guild_permissions.manage_guild or any(role.name == DISCORD_BOT_MANAGER_ROLE for role in member.roles)):
+                            is_manager = True
+                            break
+                elif self.context.guild:
+                    member = self.context.guild.get_member(self.context.author.id)
+                    if member:
+                        is_manager = (member.guild_permissions.administrator or member.guild_permissions.manage_guild or any(role.name == DISCORD_BOT_MANAGER_ROLE for role in member.roles))
+            except (AttributeError, TypeError):
+                pass
+        
+        lines = [f"**{bot.user.name}**"]
+        
+        if is_self or is_manager:
+            status = f"api={bot.api.api_type} model={bot.api.model_name} persona={bot.amygdala_response}%"
+            toggles = []
+            if getattr(bot, 'github_enabled', False): toggles.append("github")
+            if bot.dmn_processor.enabled: toggles.append("dmn")
+            if getattr(bot, 'spike_processor', None) and bot.spike_processor.enabled: toggles.append("spike")
+            if getattr(bot, 'processing_enabled', True): toggles.append("processing")
+            if getattr(bot, 'mentions_enabled', False): toggles.append("mentions")
+            if getattr(bot, 'attention_enabled', True): toggles.append("attention")
+            status += f" [{'+'.join(toggles) if toggles else 'none'}]"
+            lines.append(status)
+        
+        lines.append("")
+        
+        for cog, cog_commands in mapping.items():
+            try:
+                filtered = await self.filter_commands(cog_commands, sort=True)
+            except Exception:
+                filtered = list(cog_commands) if cog_commands else []
+            for cmd in filtered:
+                if is_self and cmd.name not in config.discord.bot_action_commands:
+                    continue
+                if not cmd.hidden or is_manager or is_self:
+                    sig = f"!{cmd.name}"
+                    for param in cmd.clean_params.values():
+                        if param.default == param.empty:
+                            sig += f" <{param.name}>"
+                        else:
+                            sig += f" [{param.name}]"
+                    desc = cmd.help.split('\n')[0] if cmd.help else ""
+                    if len(desc) > 128:
+                        desc = desc[:125] + "..."
+                    lines.append(f"`{sig}` {desc}")
+        
+        await self.get_destination().send('\n'.join(lines))
+    
+    async def send_command_help(self, command):
+        sig = f"!{command.name}"
+        for param in command.clean_params.values():
+            if param.default == param.empty:
+                sig += f" <{param.name}>"
+            else:
+                sig += f" [{param.name}]"
+        lines = [f"**{command.name}**", f"`{sig}`", command.help or "No description."]
+        if command.aliases:
+            lines.append(f"aliases: {', '.join(command.aliases)}")
+        await self.get_destination().send('\n'.join(lines))
+'''
+
 class CustomHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         embed = discord.Embed(title=f"🤖 {self.context.bot.user.name} Commands", description="Here are all available commands:", color=discord.Color.blue())
@@ -914,8 +1016,8 @@ class CustomHelpCommand(commands.HelpCommand):
             embed.add_field(name="⚡ Processing " + ("✅" if getattr(self.context.bot, 'processing_enabled', True) else "❌"), value="", inline=False)
             embed.add_field(name="🔗 Mentions " + ("✅" if getattr(self.context.bot, 'mentions_enabled', True) else "❌"), value="", inline=False)
             embed.add_field(name="👁️ Attention " + ("✅" if getattr(self.context.bot, 'attention_enabled', True) else "❌"), value="", inline=False)
-        for cog, commands in mapping.items():
-            filtered = await self.filter_commands(commands, sort=True)
+        for cog, cog_commands in mapping.items():
+            filtered = await self.filter_commands(cog_commands, sort=True)
             if filtered:
                 category = "General" if cog is None else cog.qualified_name
                 command_list = []
@@ -948,7 +1050,7 @@ class CustomHelpCommand(commands.HelpCommand):
             if checks:
                 embed.add_field(name="Requirements", value="\n".join(f"• {check}" for check in checks), inline=False)
         await self.get_destination().send(embed=embed)
-
+'''
 def load_private_api_client(bot_id: str, args):
     """
     Return an independent copy of api_client (api object + helpers)
@@ -979,16 +1081,15 @@ async def initialize_themes_cache(memory_index, logger):
         logger.error(f"Failed to initialize themes cache: {e}")
 
 async def dynamic_prefix(bot, message):
-    # always keep normal bang
-    prefixes = ['!']
     if isinstance(message.channel, discord.DMChannel):
-        return prefixes
+        return ['!']
     if not message.guild or not message.guild.me:
-        return prefixes
+        return ['!']
     tokens = [f'<@{bot.user.id}>', f'<@!{bot.user.id}>'] + [f'<@&{r.id}>' for r in message.guild.me.roles]
+    prefixes = []
     for t in tokens:
-        prefixes.append(f'{t}!')   # <@...>!command
-        prefixes.append(f'{t} !')  # <@...> !command
+        prefixes.append(f'{t}!')
+        prefixes.append(f'{t} !')
     return prefixes
 
 def setup_bot(prompt_path=None, bot_id=None):
@@ -1010,16 +1111,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     bot_cache_dir = bot_id if bot_id else "default"
     # Initialize with specific cache types under the bot's directory
     memory_index = UserMemoryIndex(f'{bot_cache_dir}/memory_index', logger=bot.logger)
-
-
-    # repo_index = RepoIndex(f'{bot_cache_dir}/repo_index')
     repo_index = RepoIndex(bot_id)
-
-    
-    # Create a temp file cache for media shared from Discord 
-    #files_root = os.path.join('cache', (bot_id if bot_id else 'default'), 'files')
-    #os.makedirs(files_root, exist_ok=True)
-    #bot.cache_managers = {'file': CacheManager(files_root)}
     bot.cache = CacheManager(bot_id or "default")
 
     
@@ -1078,7 +1170,7 @@ def setup_bot(prompt_path=None, bot_id=None):
         bot.dmn_processor.logger = BotLogger(bot.user.name)
         bot.loop.create_task(bot.dmn_processor.start())
         bot.logger.info('DMN processor started')
-        
+
         log_to_jsonl({
             'event': 'bot_ready',
             'timestamp': datetime.now().isoformat(),
@@ -1092,14 +1184,14 @@ def setup_bot(prompt_path=None, bot_id=None):
             return
 
         ctx = await bot.get_context(message)
-        if ctx.valid:
-            await bot.process_commands(message)
+        if ctx.command is not None:
+            await bot.invoke(ctx)
             return
-
-        uid=str(message.author.id)
-        attn=False
+        
+        uid = str(message.author.id)
+        attn = False
         if bot.attention_enabled:
-            attn=await asyncio.to_thread(
+            attn = await asyncio.to_thread(
                 check_attention_triggers_fuzzy,
                 message.content,
                 system_prompts.get('attention_triggers', []),
@@ -1108,23 +1200,27 @@ def setup_bot(prompt_path=None, bot_id=None):
             )
 
         if isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions or any(r in message.guild.me.roles for r in message.role_mentions) or attn:
+            
+            content, reply_context, reply_attachments = await extract_content_and_reply(message, False, bot)
+            all_attachments = list(message.attachments) + reply_attachments
+            
+            has_supported_files = False
+            for att in all_attachments:
+                ext = os.path.splitext(att.filename.lower())[1]
+                if (ext in ALLOWED_EXTENSIONS) or (att.content_type and att.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS):
+                    has_supported_files = True
+                    break
 
-            has_supported_files=False
-            if message.attachments:
-                for attachment in message.attachments:
-                    ext=os.path.splitext(attachment.filename.lower())[1]
-                    if (ext in ALLOWED_EXTENSIONS) or (attachment.content_type and attachment.content_type.startswith('image/') and ext in ALLOWED_IMAGE_EXTENSIONS):
-                        has_supported_files=True; break
-
-            if message.attachments and has_supported_files:
+            if has_supported_files:
                 try:
                     await process_files(
                         message=message,
                         memory_index=memory_index,
                         prompt_formats=prompt_formats,
                         system_prompts=system_prompts,
-                        user_message=message.content,
-                        bot=bot
+                        user_message=content,
+                        bot=bot,
+                        attachments=all_attachments
                     )
                 except Exception as e:
                     await message.channel.send(f"Error processing file(s): {str(e)}")
@@ -1133,11 +1229,10 @@ def setup_bot(prompt_path=None, bot_id=None):
             else:
                 await process_message(message, memory_index, prompt_formats, system_prompts, github_repo, is_command=False)
 
-        
     @bot.command(name='persona')
     @commands.check(lambda ctx: config.discord.has_command_permission('persona', ctx))
     async def set_amygdala_response(ctx, intensity: int = None):
-        """Set or get the AI's amygdala arousal (0-100). The intensity can be steered through in context prompts and it also adjusts the temperature of the API calls."""
+        """Set emotional intensity 0-100. Lower=calm/focused, higher=creative/volatile."""
         if intensity is None:
             await ctx.send(f"Current amygdala arousal is {bot.amygdala_response}%.")
         elif 0 <= intensity <= 100:
@@ -1154,7 +1249,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='attention')
     @commands.check(lambda ctx: config.discord.has_command_permission('attention', ctx))
     async def toggle_attention(ctx, state: str = None):
-        """Enable or disable attention trigger responses. Usage: !attention on/off"""
+        """Toggle topic-based triggers. When on, responds to relevant topics without @mention."""
         if state is None:
             status = "enabled" if bot.attention_enabled else "disabled"
             await ctx.send(f"Attention triggers are currently **{status}**")
@@ -1170,10 +1265,51 @@ def setup_bot(prompt_path=None, bot_id=None):
             await ctx.send("Usage: `!attention on` or `!attention off`")
             bot.logger.warning(f"Invalid attention command attempted: {state}")
 
+    @bot.command(name='spike')
+    @commands.check(lambda ctx: config.discord.has_command_permission('spike', ctx))
+    async def spike_control(ctx, action: str = None):
+        """Control spike processor (orphaned memory outreach)."""
+        sp = getattr(bot, 'spike_processor', None)
+        if not sp:
+            await ctx.send("Spike processor not initialized.")
+            return
+
+        if action is None or action.lower() == 'status':
+            status = "enabled" if sp.enabled else "disabled"
+            surfaces = sp.get_recent_surfaces()
+            cooldown_remaining = max(0, sp.config.cooldown_seconds - (datetime.now() - sp.last_spike).total_seconds())
+
+            lines = [
+                f"**spike status:** {status}",
+                f"**surfaces:** {len(surfaces)} active",
+                f"**cooldown:** {cooldown_remaining:.0f}s remaining" if cooldown_remaining > 0 else "**cooldown:** ready",
+                f"**threshold:** {sp.config.match_threshold:.2f}"
+            ]
+
+            if surfaces:
+                lines.append("\n**recent surfaces:**")
+                for s in surfaces[:5]:
+                    name = f"#{s.channel.name}" if hasattr(s.channel, 'name') else "DM"
+                    ago = (datetime.now() - s.last_engaged).total_seconds() / 60
+                    lines.append(f"  {name} ({ago:.0f}m ago)")
+
+            await ctx.send('\n'.join(lines))
+            return
+
+        action = action.lower()
+        if action in ('on', 'enable', 'start'):
+            sp.enabled = True
+            await ctx.send("spike processor **enabled**")
+        elif action in ('off', 'disable', 'stop'):
+            sp.enabled = False
+            await ctx.send("spike processor **disabled**")
+        else:
+            await ctx.send("usage: `!spike [on|off|status]`")
+
     @bot.command(name='add_memory')
     @commands.check(lambda ctx: config.discord.has_command_permission('add_memory', ctx))
     async def add_memory(ctx, *, memory_text):
-        """Add a new memory to the AI."""
+        """Store a custom memory for the invoking user."""
         memory_index.add_memory(str(ctx.author.id), memory_text)
         await ctx.send("Memory added successfully.")
         log_to_jsonl({
@@ -1201,7 +1337,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='summarize')
     @commands.check(lambda ctx: config.discord.has_command_permission('summarize', ctx))
     async def summarize(ctx, *, args=None):
-        """Summarize the last n messages in a specified channel and send the summary to DM."""
+        """Summarize the last [n] messages in a specified channel and send the summary to DM."""
         try:
             n = MAX_CONVERSATION_HISTORY
             channel = None
@@ -1233,10 +1369,10 @@ def setup_bot(prompt_path=None, bot_id=None):
                 return
             member = channel.guild.get_member(ctx.author.id)
             if member is None or not channel.permissions_for(member).read_messages:
-                await ctx.send(f"You don't have permission to read messages in the specified channel.")
+                await ctx.send("You don't have permission to read messages in the specified channel.")
                 return
             if not channel.permissions_for(channel.guild.me).read_message_history:
-                await ctx.send(f"I don't have permission to read message history in the specified channel.")
+                await ctx.send("I don't have permission to read message history in the specified channel.")
                 return
             typing_task = asyncio.create_task(maintain_typing_state(ctx.channel))
             try:
@@ -1272,7 +1408,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='index_repo')
     @commands.check(lambda ctx: config.discord.has_command_permission('index_repo', ctx))
     async def index_repo(ctx, option: str = None, branch: str = 'main'):
-        """Index the GitHub repository contents, list indexed files, or check indexing status."""
+        """Index the GitHub repository contents, list indexed files, or check indexing status with optional list, status and branch."""
         if not bot.github_enabled:
             await ctx.send("GitHub integration is currently disabled. Please check bot logs for details.")
             return
@@ -1317,7 +1453,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='repo_file_chat')
     @commands.check(lambda ctx: config.discord.has_command_permission('repo_file_chat', ctx))
     async def repo_file_chat(ctx, *, input_text: str = None):
-        """Specific file in the GitHub repo chat"""
+        """Discuss a repo file."""
         if not input_text:
             await ctx.send("Usage: !repo_file_chat <file_path> <task_description>")
             return
@@ -1382,7 +1518,7 @@ def setup_bot(prompt_path=None, bot_id=None):
                                     reaction_user_name = user.name
                                     reaction_parts.append(f"@{reaction_user_name}: {reaction_emoji}")
                             if reaction_parts:
-                                formatted_msg += f" (Discord Member Reactions: {' '.join(reaction_parts)})"
+                                formatted_msg += f" (Reactions: {' '.join(reaction_parts)})"
                         messages.append(formatted_msg)
 
                 for msg in reversed(messages):
@@ -1427,7 +1563,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='ask_repo')
     @commands.check(lambda ctx: isinstance(ctx.channel, discord.DMChannel) or ctx.author.guild_permissions.manage_messages)
     async def ask_repo(ctx, *, question: str = None):
-        """RAG GitHub repo chat"""
+        """Search GitHub repo and discuss results."""
         if not question:
             await ctx.send("Usage: !ask_repo <question>")
             return
@@ -1517,7 +1653,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='search_memories')
     @commands.check(lambda ctx: config.discord.has_command_permission('search_memories', ctx))
     async def search_memories(ctx, *, query):
-        """Test the memory search function."""
+        """Search stored memories."""
         is_dm = isinstance(ctx.channel, discord.DMChannel)
         user_id = str(ctx.author.id) if is_dm else None
         typing_task = asyncio.create_task(maintain_typing_state(ctx.channel))
@@ -1545,7 +1681,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='dmn')
     @commands.check(lambda ctx: config.discord.has_command_permission('dmn', ctx))
     async def dmn_control(ctx, action: str = None):
-        """Control the DMN processor. Usage: !dmn <start|stop|status>"""
+        """Control background thoughts generation and consolidation."""
         if not action:
             await ctx.send("Please specify an action: start, stop, or status")
             return
@@ -1576,6 +1712,8 @@ def setup_bot(prompt_path=None, bot_id=None):
             bot.processing_enabled = False
             if bot.dmn_processor.enabled:
                 await bot.dmn_processor.stop()
+            if hasattr(bot, 'spike_processor') and bot.spike_processor:
+                bot.spike_processor.enabled = False
             await ctx.send("Processing disabled. Ongoing API calls will complete but no new calls will be initiated.")
             bot.logger.info(f"Kill command initiated by {ctx.author.name} (ID: {ctx.author.id})")
         except Exception as e:
@@ -1587,13 +1725,15 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def resume_tasks(ctx):
         """Resume API processing"""
         bot.processing_enabled = True
+        if hasattr(bot, 'spike_processor') and bot.spike_processor:
+            bot.spike_processor.enabled = True
         await ctx.send("Processing resumed.")
         bot.logger.info(f"Processing resumed by {ctx.author.name} (ID: {ctx.author.id})")
 
     @bot.command(name='mentions')
     @commands.check(lambda ctx: config.discord.has_command_permission('mentions', ctx))
     async def toggle_mentions(ctx, state: str = None):
-        """Toggle or check mention conversion state. Usage: !mentions <on|off|status>"""
+        """Toggle or check mention conversion state."""
         if state is None or state.lower() == 'status':
             await ctx.send(f"Mention conversion is currently {'enabled' if bot.mentions_enabled else 'disabled'}.")
             return
@@ -1610,7 +1750,7 @@ def setup_bot(prompt_path=None, bot_id=None):
     @bot.command(name='get_logs')
     @commands.check(lambda ctx: config.discord.has_command_permission('get_logs', ctx))
     async def get_logs(ctx):
-        """Download bot logs (Permissions required)."""
+        """Request bot logs via DM (most recent entries up to size limit)."""
         try:
             log_dir = os.path.join(config.logging.base_log_dir, bot.user.name, 'logs')
             log_path = os.path.join(
@@ -1663,10 +1803,6 @@ def setup_bot(prompt_path=None, bot_id=None):
     async def toggle_reranking(ctx, setting: str = None):
         """
         Control hippocampus memory reranking.
-        
-        Usage:
-        !reranking - Show current reranking status
-        !reranking <on|off> - Enable/disable memory reranking
         """
         if setting is None:
             status = "on" if config.persona.use_hippocampus_reranking else "off"
@@ -1700,6 +1836,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     # Initialize global logger
+    apply_overrides(args.bot_name or "default")
     logger = BotLogger(args.bot_name if args.bot_name else "default")
     # Get base prompt path and combine with bot name if provided
     base_prompt_path = os.path.abspath(args.prompt_path)
@@ -1745,6 +1882,12 @@ if __name__ == "__main__":
     )
     # Sync initial amygdala arousal
     bot.dmn_processor.set_amygdala_response(bot.amygdala_response)
+    # Initialize spike processor (enabled by default, toggle via !spike on/off)
+    bot.spike_processor = SpikeProcessor(
+        bot,
+        bot.memory_index,
+        cache_path=os.path.join('cache', args.bot_name or 'default', 'spike')
+    )
     # Run the configured bot; discord.py handles reconnect internally
     try:
         bot.run(TOKEN, reconnect=True)

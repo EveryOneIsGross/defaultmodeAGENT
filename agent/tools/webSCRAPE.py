@@ -8,6 +8,7 @@ Where:
 * `content_type` is **never** "error". It is one of:
     - "text/html"      -> normal extraction
     - "youtube"        -> YouTube with transcript/metadata
+    - "twitter"        -> Twitter/X.com tweet
     - "html_preview"   -> raw HTML preview when structured extraction failed
     - "none"           -> nothing could be fetched (e.g. HTTP 404)
 * `error_info` is always an **empty dict** so downstream clients never see
@@ -31,6 +32,14 @@ from concurrent.futures import ThreadPoolExecutor
 from .chronpression import chronomic_filter
 from tokenizer import count_tokens, encode_text, decode_tokens
 
+# Optional Playwright import for JS-heavy sites
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logging.info("Playwright not installed - JS rendering unavailable. Install with: pip install playwright && playwright install chromium")
+
 MAX_TITLE_TOKENS = 50
 MAX_DESCRIPTION_TOKENS = 125
 MAX_CONTENT_TOKENS = 12500
@@ -42,9 +51,11 @@ MAX_PARALLEL_CHUNKS = 8
 CHARS_PER_TOKEN_ESTIMATE = 4
 MIN_COMPRESSION = 0.3
 MAX_COMPRESSION = 0.92
+MIN_CONTENT_LENGTH = 200  # Minimum chars to consider content valid
 
 _compress_executor = ThreadPoolExecutor(max_workers=MAX_PARALLEL_CHUNKS)
 
+# yt-dlp supported patterns (these use a different extraction method entirely)
 YOUTUBE_PATTERNS = [
     r"(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
     r"(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})",
@@ -53,12 +64,198 @@ YOUTUBE_PATTERNS = [
     r"(?:https?://)?(?:www\.)?m\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
 ]
 
+TWITTER_PATTERNS = [
+    r"(?:https?://)?(?:www\.)?(twitter\.com|x\.com)/\w+/status/(\d+)",
+]
+
 def is_youtube_url(url: str) -> tuple[bool, str | None]:
     for pattern in YOUTUBE_PATTERNS:
         match = re.search(pattern, url)
         if match:
             return True, match.group(1)
     return False, None
+
+def is_twitter_url(url: str) -> tuple[bool, str | None]:
+    for pattern in TWITTER_PATTERNS:
+        match = re.search(pattern, url)
+        if match:
+            return True, match.group(2)
+    return False, None
+
+def needs_playwright_fallback(html_text: str, extracted_content: str) -> bool:
+    """
+    Detect if we need to retry with Playwright based on response content.
+    Returns True if the page appears to require JavaScript rendering.
+    """
+    if not html_text:
+        return True
+
+    lower = html_text.lower()
+
+    # Check for explicit JS-required messages
+    js_indicators = [
+        "requires javascript",
+        "enable javascript",
+        "javascript is required",
+        "please enable javascript",
+        "needs javascript",
+        "javascript must be enabled",
+        "this site requires javascript",
+        "you need to enable javascript",
+    ]
+    if any(indicator in lower for indicator in js_indicators):
+        return True
+
+    # Check for empty/minimal content after extraction
+    if len(extracted_content.strip()) < MIN_CONTENT_LENGTH:
+        # Page loaded but no real content - likely JS-rendered
+        return True
+
+    return False
+
+def _sync_playwright_fetch(url: str, timeout: int = 20) -> str | None:
+    """Synchronous Playwright fetch - runs in thread to avoid blocking event loop."""
+    if not PLAYWRIGHT_AVAILABLE:
+        return None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+                )
+            )
+            page = context.new_page()
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                # Smart wait: check for content rather than fixed delay
+                try:
+                    page.wait_for_function(
+                        "document.body && document.body.innerText.length > 500",
+                        timeout=3000
+                    )
+                except:
+                    page.wait_for_timeout(1500)
+                content = page.content()
+            finally:
+                browser.close()
+
+            return content
+    except Exception as e:
+        logging.warning("Playwright fetch failed for %s: %s", url, e)
+        return None
+
+async def fetch_with_playwright(url: str, timeout: int = 20) -> str | None:
+    """Fetch page content using Playwright - runs in executor to avoid blocking Discord."""
+    if not PLAYWRIGHT_AVAILABLE:
+        return None
+
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _sync_playwright_fetch, url, timeout)
+    except Exception as e:
+        logging.warning("Playwright executor failed for %s: %s", url, e)
+        return None
+
+async def fetch_html(url: str) -> tuple[str | None, str | None]:
+    """
+    Fetch HTML content. Returns (html_text, error_description).
+    Tries aiohttp first, falls back to Playwright on failure.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+        )
+    }
+
+    # Try aiohttp first (fast path)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 403:
+                    logging.info("HTTP 403 - site blocking bots: %s", url)
+                    # Fallback to Playwright
+                    if PLAYWRIGHT_AVAILABLE:
+                        html_text = await fetch_with_playwright(url)
+                        return html_text, None if html_text else "HTTP 403 - blocked"
+                    return None, "HTTP 403 - site blocks bots"
+
+                if resp.status >= 400:
+                    return None, f"HTTP {resp.status}"
+
+                return await resp.text(), None
+
+    except aiohttp.ClientResponseError as e:
+        if "Header value is too long" in str(e):
+            logging.info("Oversized headers, trying Playwright: %s", url)
+            if PLAYWRIGHT_AVAILABLE:
+                html_text = await fetch_with_playwright(url)
+                return html_text, None if html_text else "Site has oversized headers"
+            return None, "Site has oversized headers"
+        raise
+
+async def download_image(image_url: str, cache, user_id: str) -> str | None:
+    """
+    Download an image and save it to the cache.
+    Returns the local file path or None if download failed.
+    """
+    if not cache or not user_id:
+        return None
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+        )
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logging.warning("Failed to download image %s: HTTP %s", image_url, resp.status)
+                    return None
+
+                content_type = resp.headers.get("Content-Type", "")
+                # Determine file extension
+                if "png" in content_type:
+                    suffix = ".png"
+                elif "gif" in content_type:
+                    suffix = ".gif"
+                elif "webp" in content_type:
+                    suffix = ".webp"
+                else:
+                    suffix = ".jpg"
+
+                image_bytes = await resp.read()
+                if len(image_bytes) < 100:  # Too small, probably an error
+                    return None
+
+                file_path, _ = cache.create_temp_file(
+                    user_id,
+                    prefix="img",
+                    suffix=suffix,
+                    content=image_bytes
+                )
+                logging.info("Downloaded image to %s (%d bytes)", file_path, len(image_bytes))
+                return file_path
+
+    except Exception as e:
+        logging.warning("Failed to download image %s: %s", image_url, e)
+        return None
+
+async def download_images(image_urls: list[str], cache, user_id: str, max_images: int = 4) -> list[str]:
+    """Download multiple images in parallel, return list of local file paths."""
+    if not cache or not user_id or not image_urls:
+        return []
+
+    tasks = [download_image(url, cache, user_id) for url in image_urls[:max_images]]
+    results = await asyncio.gather(*tasks)
+    return [path for path in results if path]
 
 def get_compression_for_target(raw_tokens: int, target_tokens: int) -> float:
     if raw_tokens <= target_tokens:
@@ -138,14 +335,7 @@ async def parallel_compress(text: str, compression: float = 0.5, fuzzy_strength:
         logging.warning("Parallel compression failed")
         return text, False
 
-def safe_chronomic(text: str, compression: float = 0.5, fuzzy_strength: float = 1.0) -> tuple[str, bool]:
-    try:
-        return chronomic_filter(text, compression=compression, fuzzy_strength=fuzzy_strength, horizon=6), True
-    except Exception:
-        logging.warning("Chronomic filtering failed")
-        return text, False
-
-async def scrape_webpage(url: str) -> dict:
+async def scrape_webpage(url: str, cache=None, user_id=None) -> dict:
     logging.info("Starting to scrape URL: %s", url)
 
     class Result(TypedDict):
@@ -155,6 +345,7 @@ async def scrape_webpage(url: str) -> dict:
         content: str
         content_type: str
         error_info: dict
+        image_paths: list[str]  # Local paths to downloaded images
 
     def truncate_middle_tokens(text: str, max_tokens: int, preserve_ratio: float = PRESERVE_RATIO) -> str:
         if not text:
@@ -198,7 +389,7 @@ async def scrape_webpage(url: str) -> dict:
         txt = unicodedata.normalize("NFKC", txt)
         return re.sub(r"\s+", " ", txt).strip()
 
-    def partial_result(*, title: str | None = None, description: str | None = None, content: str = "") -> Result:
+    def partial_result(*, title: str | None = None, description: str | None = None, content: str = "", image_paths: list[str] | None = None) -> Result:
         return Result(
             url=url,
             title=truncate_field_tokens(title or url, MAX_TITLE_TOKENS),
@@ -206,7 +397,47 @@ async def scrape_webpage(url: str) -> dict:
             content=content,
             content_type="html_preview" if content else "none",
             error_info={},
+            image_paths=image_paths or [],
         )
+
+    def extract_content(soup: BeautifulSoup) -> str:
+        """Extract main content from parsed HTML."""
+        # Remove junk
+        for tag in soup(["script", "style", "nav", "header", "footer", "iframe", "form"]):
+            tag.decompose()
+
+        # Try semantic selectors
+        for sel in ("article", "main", '[role="main"]', ".content", "#content"):
+            main = soup.select_one(sel)
+            if main:
+                return clean(main.get_text(" ", strip=True))
+
+        # Fallback: collect significant paragraphs and headings
+        BAD_UI = re.compile(
+            r"(cookie|accept|subscribe|sign[\s-]?up|sign[\s-]?in|login|password|username|newsletter|privacy\s+policy|terms\s+of\s+service|copyright)",
+            flags=re.I,
+        )
+
+        def is_sig(block: str) -> bool:
+            block = block.strip()
+            if len(block) < 30 or BAD_UI.search(block):
+                return False
+            if not any(p in block for p in ".!?"):
+                return False
+            spec_ratio = sum(1 for c in block if not (c.isalnum() or c.isspace())) / len(block)
+            if spec_ratio > 0.33:
+                return False
+            words = block.lower().split()
+            return not (len(words) > 5 and len(set(words)) / len(words) < 0.5)
+
+        blocks = []
+        for elem in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6"]):
+            txt = elem.get_text(" ", strip=True)
+            if is_sig(txt) and txt not in blocks:
+                blocks.append(txt)
+        return "\n\n".join(blocks)
+
+    # === yt-dlp handlers (YouTube, Twitter) ===
 
     is_yt, video_id = is_youtube_url(url)
     if is_yt:
@@ -236,6 +467,8 @@ async def scrape_webpage(url: str) -> dict:
                         "subtitleslangs": ["en", "en-US", "en-GB", "en-CA", "en-AU"],
                         "subtitlesformat": "vtt",
                     }
+                    if cache and user_id:
+                        opts["paths"] = {"temp": cache.get_user_temp_dir(user_id)}
                     with YoutubeDL(opts) as ydl:
                         return ydl.extract_info(url, download=False)
 
@@ -291,39 +524,46 @@ async def scrape_webpage(url: str) -> dict:
                     compression = get_compression_for_target(raw_tokens, MAX_TRANSCRIPT_TOKENS)
                     if quality < 0.7:
                         compression = min(compression + 0.05, MAX_COMPRESSION)
-                    logging.info("Using compression: %.2f (pidgin factor: %.2f)", compression, max(0, (compression - 0.8) / 0.2) if compression > 0.8 else 0)
                     transcript, _ = await parallel_compress(transcript, compression=compression, fuzzy_strength=1.0)
-                    compressed_tokens = count_tokens(transcript)
-                    logging.info("Compressed tokens: %d", compressed_tokens)
                 else:
                     transcript = "[Transcript not available]"
 
-                md_parts = [
-                    f"# {truncate_field_tokens(info.get('title', 'Untitled'), MAX_TITLE_TOKENS)}",
-                    "",
-                    f"**Channel**: {info.get('channel') or info.get('uploader', 'Unknown')}",
-                    (
-                        f"**Duration**: {info.get('duration', 0) // 60}:{info.get('duration', 0) % 60:02d}"
-                        if info.get("duration")
-                        else "**Duration**: Unknown"
-                    ),
-                    f"**Views**: {info.get('view_count', 0):,}" if info.get("view_count") else "**Views**: Unknown",
-                    f"**URL**: {url}",
-                    "",
-                    "## Description",
-                    truncate_middle_tokens(info.get("description") or "No description", 1250),
-                    "",
-                    "## Transcript",
-                    truncate_middle_tokens(transcript, MAX_TRANSCRIPT_TOKENS),
-                ]
+                # Get best thumbnail URL
+                thumbnail_url = info.get("thumbnail") or ""
+                if not thumbnail_url and info.get("thumbnails"):
+                    thumbs = sorted(info["thumbnails"], key=lambda x: x.get("width", 0), reverse=True)
+                    thumbnail_url = thumbs[0].get("url", "") if thumbs else ""
+
+                # Download thumbnail if cache available
+                thumbnail_path = None
+                if thumbnail_url and cache and user_id:
+                    thumbnail_path = await download_image(thumbnail_url, cache, user_id)
+
+                # Build content - let content dictate metadata
+                title = info.get('title', 'Untitled')
+                channel = info.get('channel') or info.get('uploader', 'Unknown')
+                description = info.get("description") or ""
+
+                content_parts = []
+                if description:
+                    content_parts.append(truncate_middle_tokens(description, 1250))
+                if transcript and transcript != "[Transcript not available]":
+                    content_parts.append(f"\n\n---\nTranscript:\n{truncate_middle_tokens(transcript, MAX_TRANSCRIPT_TOKENS)}")
+                if thumbnail_path:
+                    content_parts.append(f"\n\n[Thumbnail: {thumbnail_path}]")
+                elif thumbnail_url:
+                    content_parts.append(f"\n\n[Thumbnail URL: {thumbnail_url}]")
+
+                full_content = "".join(content_parts) if content_parts else "[No content available]"
 
                 return Result(
                     url=url,
-                    title=truncate_field_tokens(info.get("title", "Untitled"), MAX_TITLE_TOKENS),
-                    description=truncate_field_tokens(f"YouTube video by {info.get('channel', 'Unknown')}", MAX_DESCRIPTION_TOKENS),
-                    content="\n".join(md_parts),
+                    title=truncate_field_tokens(title, MAX_TITLE_TOKENS),
+                    description=truncate_field_tokens(channel, MAX_DESCRIPTION_TOKENS),
+                    content=full_content,
                     content_type="youtube",
                     error_info={},
+                    image_paths=[thumbnail_path] if thumbnail_path else [],
                 )
             except Exception:
                 logging.exception("YouTube scraping failed")
@@ -331,57 +571,163 @@ async def scrape_webpage(url: str) -> dict:
 
         return await scrape_youtube()
 
-    BAD_UI = re.compile(
-        r"(cookie|accept|subscribe|sign[\s-]?up|sign[\s-]?in|login|password|username|newsletter|privacy\s+policy|terms\s+of\s+service|copyright)",
-        flags=re.I,
-    )
+    is_tweet, tweet_id = is_twitter_url(url)
+    if is_tweet:
+        logging.info("Detected Twitter/X.com tweet ID: %s", tweet_id)
 
-    def is_sig(block: str) -> bool:
-        block = block.strip()
-        if len(block) < 30 or BAD_UI.search(block):
-            return False
-        if not any(p in block for p in ".!?"):
-            return False
-        spec_ratio = sum(1 for c in block if not (c.isalnum() or c.isspace())) / len(block)
-        if spec_ratio > 0.33:
-            return False
-        words = block.lower().split()
-        return not (len(words) > 5 and len(set(words)) / len(words) < 0.5)
+        def extract_urls_from_text(text: str) -> list[str]:
+            """Extract URLs from text, excluding twitter/x.com links."""
+            url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
+            urls = re.findall(url_pattern, text)
+            # Filter out twitter/x.com URLs and t.co shortlinks
+            return [u for u in urls if not re.search(r'(twitter\.com|x\.com|t\.co)/', u)]
+
+        async def scrape_linked_content(urls: list[str]) -> str:
+            """Scrape and compress content from linked URLs."""
+            if not urls:
+                return ""
+
+            linked_parts = []
+            for link_url in urls[:2]:  # Limit to 2 links
+                try:
+                    logging.info("Following link from tweet: %s", link_url)
+                    link_html, error = await fetch_html(link_url)
+                    if link_html and not error:
+                        soup = BeautifulSoup(link_html, "html.parser")
+                        content = extract_content(soup)
+                        if needs_playwright_fallback(link_html, content) and PLAYWRIGHT_AVAILABLE:
+                            pw_html = await fetch_with_playwright(link_url)
+                            if pw_html:
+                                soup = BeautifulSoup(pw_html, "html.parser")
+                                pw_content = extract_content(soup)
+                                if len(pw_content) > len(content):
+                                    content = pw_content
+
+                        if content and len(content) > 100:
+                            raw_tokens = len(content) // CHARS_PER_TOKEN_ESTIMATE
+                            compression = get_compression_for_target(raw_tokens, 2000)
+                            compressed, _ = await parallel_compress(content, compression=compression, fuzzy_strength=1.0)
+                            title = soup.title.string.strip() if soup.title and soup.title.string else link_url
+                            linked_parts.append(f"### Linked: {title}\n{truncate_middle_tokens(compressed, 2000)}")
+                except Exception as e:
+                    logging.warning("Failed to scrape linked URL %s: %s", link_url, e)
+
+            return "\n\n".join(linked_parts)
+
+        async def scrape_twitter() -> Result:
+            tweet_text = ""
+            author = "Unknown"
+            images = []
+
+            # Use Playwright directly for Twitter (yt-dlp is for video, not tweets)
+            if PLAYWRIGHT_AVAILABLE:
+                logging.info("Fetching Twitter with Playwright: %s", url)
+                try:
+                    html_text = await fetch_with_playwright(url)
+                    if html_text:
+                        logging.info("Playwright got %d chars of HTML", len(html_text))
+                        soup = BeautifulSoup(html_text, "html.parser")
+
+                        # Extract author from tweet
+                        author_elem = soup.select_one('[data-testid="User-Name"] a, article a[href*="/status/"]')
+                        if author_elem:
+                            href = author_elem.get("href", "")
+                            if href and "/" in href:
+                                author = href.split("/")[1] if href.startswith("/") else href.split("/")[3]
+
+                        # Extract tweet text
+                        for sel in ['[data-testid="tweetText"]', 'article [lang]', '[role="article"]']:
+                            elem = soup.select_one(sel)
+                            if elem:
+                                tweet_text = clean(elem.get_text(" ", strip=True))
+                                logging.info("Found tweet text with selector %s: %d chars", sel, len(tweet_text))
+                                if len(tweet_text) > 20:
+                                    break
+
+                        # Extract images from tweet
+                        for img in soup.select('[data-testid="tweetPhoto"] img, article img[src*="pbs.twimg.com"]'):
+                            src = img.get("src", "")
+                            if src and "pbs.twimg.com" in src and src not in images:
+                                images.append(src)
+                    else:
+                        logging.warning("Playwright returned no HTML for Twitter")
+                except Exception as e:
+                    logging.warning("Playwright Twitter fetch error: %s", e)
+            else:
+                logging.warning("Playwright not available for Twitter scraping")
+
+            if not tweet_text:
+                return partial_result(description="Could not extract tweet - login may be required")
+
+            # Download images if cache available
+            image_paths = []
+            if images and cache and user_id:
+                image_paths = await download_images(images, cache, user_id, max_images=4)
+                logging.info("Downloaded %d/%d images for tweet", len(image_paths), len(images))
+
+            # Extract and follow links from tweet text
+            external_urls = extract_urls_from_text(tweet_text)
+            linked_content = await scrape_linked_content(external_urls)
+
+            # Build content - let content dictate metadata
+            content_parts = [tweet_text]
+
+            if image_paths:
+                content_parts.append(f"\n[Images: {', '.join(image_paths)}]")
+            elif images:
+                # Fallback to URLs if download failed
+                content_parts.append(f"\n[Image URLs: {', '.join(images[:4])}]")
+
+            if linked_content:
+                content_parts.append(f"\n\n---\n{linked_content}")
+
+            full_content = "".join(content_parts)
+
+            # Derive metadata from content
+            first_line = tweet_text.split('\n')[0][:100] if tweet_text else url
+
+            return Result(
+                url=url,
+                title=truncate_field_tokens(first_line, MAX_TITLE_TOKENS),
+                description=truncate_field_tokens(f"@{author}" if author != "Unknown" else "", MAX_DESCRIPTION_TOKENS),
+                content=full_content,
+                content_type="twitter",
+                error_info={},
+                image_paths=image_paths,
+            )
+
+        return await scrape_twitter()
+
+    # === General HTML scraping ===
 
     try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-            )
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status >= 400:
-                    logging.warning("HTTP %s for %s", resp.status, url)
-                    return partial_result(description=f"HTTP {resp.status}")
-                html_text = await resp.text()
+        # Step 1: Try fast aiohttp fetch
+        html_text, error = await fetch_html(url)
 
+        if error:
+            logging.warning("%s for %s", error, url)
+            return partial_result(description=error)
+
+        if not html_text:
+            return partial_result(description="Could not fetch page")
+
+        # Step 2: Parse and extract content
         soup = BeautifulSoup(html_text, "html.parser")
-        for tag in soup(["script", "style", "nav", "header", "footer", "iframe", "form"]):
-            tag.decompose()
+        content = extract_content(soup)
 
-        main = None
-        for sel in ("article", "main", '[role="main"]', ".content", "#content"):
-            main = soup.select_one(sel)
-            if main:
-                break
+        # Step 3: Check if we need Playwright fallback
+        if needs_playwright_fallback(html_text, content) and PLAYWRIGHT_AVAILABLE:
+            logging.info("Content insufficient, retrying with Playwright: %s", url)
+            playwright_html = await fetch_with_playwright(url)
+            if playwright_html:
+                soup = BeautifulSoup(playwright_html, "html.parser")
+                playwright_content = extract_content(soup)
+                # Only use Playwright result if it's better
+                if len(playwright_content) > len(content):
+                    html_text = playwright_html
+                    content = playwright_content
 
-        if main:
-            content = clean(main.get_text(" ", strip=True))
-        else:
-            blocks = []
-            for elem in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6"]):
-                txt = elem.get_text(" ", strip=True)
-                if is_sig(txt) and txt not in blocks:
-                    blocks.append(txt)
-            content = "\n\n".join(blocks)
-
+        # Step 4: Process content
         if not content:
             content = truncate_middle_tokens(clean(html_text), MAX_HTML_PREVIEW_TOKENS)
             ctype = "html_preview"
@@ -404,6 +750,7 @@ async def scrape_webpage(url: str) -> dict:
             content=truncate_middle_tokens(content, MAX_CONTENT_TOKENS),
             content_type=ctype,
             error_info={},
+            image_paths=[],
         )
 
     except Exception:

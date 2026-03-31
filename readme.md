@@ -18,13 +18,13 @@ not just another chatbot framework. a framework for entities that persist.
 
 ----
 
-# why choose defaultMODE?
+# why defaultMODE?
 
 multi-user chatbots lose themselves. large cloud models can hold character across long conversations, but smaller open-source models collapse—mirroring whoever spoke last, forgetting their own voice after one turn. the longer the context, the more the self dissolves.
 
 most frameworks ignore this. they assume the model will just figure it out.
 
-defaultMODE is an animated skeleton. 💀 the cognitive architecture maintains shape even when the underlying model is small or forgetful. memory, attention, and arousal systems do the work of coherence so the model doesn't have to hold everything in context. you can strip bones out and the thing still stands.
+defaultMODE is an animated skeleton. 💀 the stateful cognitive architecture maintains shape even when the underlying model is small or forgetful. memory, attention, and arousal systems do the work of coherence so the model doesn't have to hold everything in context. you can strip bones out and the thing still stands.
 
 tune `bot_config.py` when running lighter models. the framework adapts; context rot becomes optional.
 
@@ -60,11 +60,18 @@ input → attention filter → hippocampal retrieval → reranking by embedding
                     memory storage → thought generation → dmn integration
                                     ↑
               [background: dmn walks, prunes, dreams, forgets]
+                                    │
+                          orphan detected? → spike
+                                    │
+                   score channel surfaces (bm25 + theme resonance)
+                                    │
+                    viable match → outreach → reflect → memory
 ```
 
 ## cognitive architecture
 
 - **default mode network** — background process performs associative memory walks, generates reflective thoughts, prunes term overlap between related memories, and manages graceful forgetting. the agent dreams between conversations.
+- **spike processor** — when DMN encounters an orphaned memory (pruned to isolation, no internal connections remaining), it delegates to spike. spike scans recently-engaged channels for semantic resonance using BM25 scoring blended with theme matching. a viable match triggers unprompted outreach. every fired spike produces two memories stored under the bot's own user ID: an interaction record and a private reflection — both feed back into future DMN walks, enabling meta-cognition about its own outreach behaviour. requires `spike_engagement` prompts in both yaml files.
 - **amygdala complex** — memory density modulates arousal which scales llm temperature dynamically. sparse context → careful, deterministic. rich context → creative, exploratory. emotional tone emerges from cognitive state.
 - **hippocampal formation** — hybrid retrieval blending inverted index with tf-idf scoring and embedding-based reranking at inference time. bandwidth adapts to arousal level for human-like recall under pressure.
 - **temporal integration** — timestamps parsed as natural language expressions ("yesterday morning", "last week") rather than raw datetime, giving the agent intuitive temporal reasoning about its memories.
@@ -90,7 +97,8 @@ input → attention filter → hippocampal retrieval → reranking by embedding
 ## discord-native design
 
 - **message conditioning** — username logic, mention handling, reaction tracking, chunking for discord limits, code block preservation. seamless integration without fighting the platform.
-- **multi-agent ready** — multiple bot instances with separate memory indices, api configurations, and personalities. they can coexist and potentially interact.
+- **multi-agent ready** — multiple bot instances with separate memory indices, api configurations, and personalities. they can coexist and collaborate.
+- **self-invocation** — bot can invoke whitelisted commands from its own responses, enabling tool use and agentic behavior.
 - **graceful degradation** — kill/resume commands, processing toggles, attention on/off. operators maintain control without losing state.
 
 ## observability
@@ -102,28 +110,116 @@ input → attention filter → hippocampal retrieval → reranking by embedding
 
 ---
 
-**Getting Started**
+# setup
 
-1.  **Clone:** `git clone https://github.com/everyoneisgross/defaultmodeAGENT && cd defaultmodeAGENT`
-2.  **Install:** `pip install -r requirements.txt`
-3.  **Configure:** Create a `.env` file (refer to `.env.example`) and populate it with your Discord token and any necessary API keys.
-4.  **Define Your Agent:** Create `system_prompts.yaml` and `prompt_formats.yaml` within the `/agent/prompts/your_agent_name/` directory. (Example files are provided.)
+**prerequisites:** python 3.10+, a discord bot token, at least one LLM API key or a local ollama instance.
 
-    ```yaml
-    # Example system_prompts.yaml snippet:
-    default_chat: |
-      You are a curious AI entity.  Your name is {bot_name}.  You have a persistent memory and can reflect on past interactions. Your current intensity level is {amygdala_response}%. At 0% you are boring at 100% you are too much fun. Your preferences for things are {themes}. 
-    ```
+### 1. clone
 
-5.  **Run:** `python agent/discord_bot.py --api ollama --model hermes3 --bot-name your_agent_name`
+```bash
+git clone https://github.com/everyoneisgross/defaultmodeAGENT
+cd defaultmodeAGENT
+```
 
-**Technical Overview**
+### 2. run setup
 
-*   **Persistence:** Memories are persisted using a pickled inverted-index, ensuring data is preserved between sessions and can be all held in memory for fast inference.
-*   **Analysis:** JSONL logs and an SQLite database are included for auditing and analysis.
-*   **Configuration:** Managed via YAML files for prompt definitions and environment variables for sensitive credentials and API keys.
-*   **Code:** Python, with an emphasis on tool modularity. Abstractions will transfer to other social platforms eventually.
-*   **Dependencies:** Detailed in `requirements.txt`, including libraries for Discord interaction, LLM APIs, and data handling.
+the included `setup.py` handles environment creation, dependency installation, and API key configuration in one pass.
+
+```bash
+python setup.py
+```
+
+it will:
+- check your python version
+- create a `.venv` virtual environment
+- install all dependencies from `requirements.txt`
+- walk through your `.env`, prompting for any missing API keys (discord tokens, openai, anthropic, gemini, etc.)
+- auto-detect bots from `agent/prompts/` and prompt for their tokens individually
+
+**flags:**
+```bash
+python setup.py --install   # venv + packages only, skip .env
+python setup.py --env       # .env config only, skip venv
+```
+
+> keys already present in `.env` are skipped — safe to re-run.
+
+### 3. create your agent
+
+create a directory under `agent/prompts/` named after your bot:
+
+```
+agent/prompts/your_bot_name/
+├── system_prompts.yaml     # required — personality, attention triggers, dmn prompts
+├── prompt_formats.yaml     # required — message template formats
+└── character_sheet.md      # optional — extended lore and background
+```
+
+minimal `system_prompts.yaml`:
+```yaml
+default_chat: |
+  You are {bot_name}. You have persistent memory and reflect on past interactions.
+  Your intensity is {amygdala_response}%. Your current interests are {themes}.
+```
+
+set the corresponding discord token in `.env`:
+```
+DISCORD_TOKEN_YOUR_BOT_NAME=your_token_here
+```
+
+### 4. launch
+
+directly:
+```bash
+python agent/discord_bot.py --api ollama --model hermes3 --bot-name your_bot_name
+python agent/discord_bot.py --api openai --model gpt-4o --bot-name your_bot_name
+python agent/discord_bot.py --api anthropic --model claude-sonnet-4-6 --bot-name your_bot_name
+```
+
+or use the TUI manager (see below):
+```bash
+python run_bot.py
+```
+
+**supported APIs:** `ollama` · `openai` · `anthropic` · `gemini` · `vllm` · `openrouter`
+
+---
+
+# run_bot — TUI manager
+
+`run_bot.py` is a terminal UI for launching and supervising multiple bot instances without leaving your terminal. built on [textual](https://github.com/Textualize/textual).
+
+```bash
+python run_bot.py
+```
+
+requires dependencies from `requirements.txt` to be installed first.
+
+### tabs
+
+| key | tab | description |
+|-----|-----|-------------|
+| `1` | **Launch** | select a bot, API, and model then launch. runs multiple instances simultaneously. each instance gets a live log panel with stop controls. optionally set a separate API/model for the DMN background process. |
+| `2` | **Logs** | reads the JSONL log file for any bot with a cache. keyword search, auto-refresh on a configurable interval (5s / 10s / 30s). last 300 entries shown. |
+| `3` | **Prompts** | view and edit `system_prompts.yaml` and `prompt_formats.yaml` for each bot directly from the TUI. |
+| `4` | **Memory** | inspect, search, edit, and delete stored memories for any bot. supports find-and-replace across the full index. edits warn if the bot is currently running. |
+| `5` | **Viz** | 2D latent-space map of the memory index. nodes are memories projected via TF-IDF + UMAP. navigate with `wasd` / arrow keys, zoom with `+`/`-`, select with `enter` to read memory content. |
+
+### keyboard shortcuts
+
+| key | action |
+|-----|--------|
+| `1`–`5` | switch tabs |
+| `q` | quit (gracefully stops all running bots) |
+| `w a s d` | navigate viz map |
+| `↑ ↓ ← →` | pan viz map |
+| `+ -` | zoom viz map |
+| `enter` | select viz node |
+| `f` | focus viz on selected node |
+
+### dmn split-model
+
+on the Launch tab you can assign a separate API and model specifically for the Default Mode Network. useful for running a cheap/fast local model for dreaming while the main conversation uses a cloud model, or vice versa.
 
 ---
 

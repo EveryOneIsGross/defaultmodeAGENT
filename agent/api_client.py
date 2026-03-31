@@ -1,15 +1,13 @@
-import os, json, base64, asyncio, logging
+import os, json, base64, asyncio, logging, mimetypes
 from io import BytesIO
 from datetime import datetime, timezone
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict, Any
 
 import aiohttp
 import openai
 import anthropic
-
 from google import genai
 from google.genai import types
-import mimetypes
 
 from PIL import Image
 from dotenv import load_dotenv
@@ -40,7 +38,57 @@ class APIState(BaseModel):
     frequency_penalty: float = Field(0.8, ge=-2.0, le=2.0)
     presence_penalty:  float = Field(0.5, ge=-2.0, le=2.0)
 
+class ToolSpec(BaseModel):
+    name: str
+    description: str
+    parameters: dict
+
 api = APIState()
+
+# ───────────────────────────  tools wiring  ────────────────────────────────
+PROVIDER_TOOL_STYLE = {
+    "openai": "openai",
+    "openrouter": "openai",
+    "ollama": "openai",
+    "vllm": "openai",
+    "anthropic": "anthropic",
+    "gemini": "gemini",
+}
+
+def adapt_tools(tools: Optional[List[ToolSpec]], provider: str) -> dict:
+    if not tools: return {}
+    style = PROVIDER_TOOL_STYLE.get(provider)
+    if style == "openai":
+        return {
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters
+                }
+            } for t in tools],
+            "tool_choice": "auto"
+        }
+    if style == "anthropic":
+        return {
+            "tools": [{
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.parameters
+            } for t in tools]
+        }
+    if style == "gemini":
+        return {
+            "tools": [{
+                "function_declarations": [{
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters
+                } for t in tools]
+            }]
+        }
+    return {}
 
 # ───────────────────────────  helpers  ─────────────────────────────────────
 def _require_env(var: str) -> str:
@@ -55,7 +103,6 @@ def build_chat_messages(system: str, context: str, user_content):
     msgs.append({"role": "user", "content": user_content})
     return msgs
 
-# embarassing code for gpt5 detection to ignore temp/top_p settings
 def _is_gpt5(name: str | None) -> bool:
     return (name or "").lower().startswith("gpt-5")
 
@@ -86,7 +133,7 @@ def prepare_image_content(prompt: str, image_paths: List[str], api_type: str) ->
         for b in b64s:
             parts.append({"type": "image","source":{"type":"base64","media_type":"image/jpeg","data":b}})
         return parts, list(dims)
-    if api_type in ("openai", "ollama", "openrouter"):
+    if api_type in ("openai", "ollama", "openrouter", "vllm"):
         parts = [{"type": "text", "text": prompt}]
         for b in b64s:
             parts.append({"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b}"}})
@@ -121,7 +168,6 @@ def get_api_config(api_type: str, model_override: str | None = None) -> Provider
                               model_name=model_override or os.getenv("OPENROUTER_MODEL_NAME","moonshotai/kimi-k2:free"))
     raise ValueError(f"Unsupported API type: {api_type}")
 
-# ───────────────────────────  initialize_api_client  ──────────────────────
 def initialize_api_client(args):
     api.api_type  = args.api
     cfg = get_api_config(api.api_type, args.model)
@@ -131,7 +177,6 @@ def initialize_api_client(args):
     if api.api_type == "openai": openai.api_key = api.api_key
     logging.info("Initialized API client (%s, model=%s)", api.api_type, api.model_name)
 
-# ───────────────────────────  public setters  ──────────────────────────────
 def update_api_temperature(temperature: float) -> None:
     if not 0.0 <= temperature <= 2.0: raise ValueError("temperature must be between 0.0 and 2.0")
     api.temperature = temperature; logging.info("temperature set to %.2f", api.temperature)
@@ -148,7 +193,6 @@ def update_api_presence_penalty(penalty: float) -> None:
     if not -2.0 <= penalty <= 2.0: raise ValueError("presence_penalty must be between -2.0 and 2.0")
     api.presence_penalty = penalty; logging.info("presence_penalty set to %.2f", api.presence_penalty)
 
-# ───────────────────────────  retry wrapper  ───────────────────────────────
 async def retry_api_call(func, *a, max_retries=3, retry_delay=1, **kw):
     for attempt in range(max_retries):
         try:
@@ -160,21 +204,100 @@ async def retry_api_call(func, *a, max_retries=3, retry_delay=1, **kw):
                 await asyncio.sleep(retry_delay); continue
             raise
 
+# ───────────────────────────  openai-compat tool loop  ─────────────────────
+def _extract_openai_tool_calls(msg) -> List[dict]:
+    tcs = getattr(msg, "tool_calls", None) or []
+    out = []
+    for tc in tcs:
+        fn = getattr(tc, "function", None)
+        out.append({
+            "id": getattr(tc, "id", None),
+            "name": getattr(fn, "name", None),
+            "arguments": getattr(fn, "arguments", None) or "{}",
+        })
+    return [x for x in out if x["name"]]
+
+async def _openai_compat_chat(*, base_url: str | None, api_key: str, model: str, msgs: list,
+                             temperature: float, top_p: float, frequency_penalty: float, presence_penalty: float,
+                             tools: list | None, tool_choice: str | dict | None,
+                             max_tokens_key: str, max_tokens_val: int,
+                             gpt5_no_sampling: bool):
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+    kwargs = {"model": model, "messages": msgs, max_tokens_key: max_tokens_val, "tools": tools, "tool_choice": tool_choice}
+    if not gpt5_no_sampling:
+        kwargs.update(temperature=temperature, top_p=top_p, frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
+    r = await client.chat.completions.create(**kwargs)
+    return r.choices[0].message
+
+async def _openai_compat_call_with_auto_tools(*, provider: str, cfg: ProviderConfig,
+                                             system_prompt: str, context: str, content: object,
+                                             temperature: float, top_p: float, frequency_penalty: float, presence_penalty: float,
+                                             tools_payload: dict, tool_runtime: Dict[str, Any] | None,
+                                             max_rounds: int = 4):
+    base_url = None
+    api_key = cfg.api_key
+    max_tokens_key = "max_completion_tokens" if provider == "openai" else "max_tokens"
+    max_tokens_val = 12_000 if provider in ("openai", "ollama") else 12_000
+    if provider == "ollama": base_url = f"{cfg.api_base}/v1"
+    if provider == "openrouter": base_url = cfg.api_base
+    if provider == "vllm": base_url = f"{cfg.api_base}/v1"
+    if provider in ("ollama",): api_key = "ollama"
+
+    msgs = build_chat_messages(system_prompt, context, content)
+    tools = tools_payload.get("tools")
+    tool_choice = tools_payload.get("tool_choice")
+
+    for _ in range(max_rounds):
+        m = await _openai_compat_chat(
+            base_url=base_url, api_key=api_key, model=cfg.model_name, msgs=msgs,
+            temperature=temperature, top_p=top_p, frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
+            tools=tools, tool_choice=tool_choice,
+            max_tokens_key=max_tokens_key, max_tokens_val=max_tokens_val,
+            gpt5_no_sampling=_is_gpt5(cfg.model_name) if provider == "openai" else False
+        )
+        tcs = _extract_openai_tool_calls(m)
+        if not tcs: return m.content.strip()
+
+        if not tool_runtime: return m.content.strip() if m.content else ""
+
+        msgs.append({"role": "assistant", "content": m.content, "tool_calls": getattr(m, "tool_calls", None)})
+        for tc in tcs:
+            fn = tool_runtime.get(tc["name"])
+            if not fn:
+                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps({"error": "tool_not_found", "name": tc["name"]})})
+                continue
+            try:
+                args = json.loads(tc["arguments"] or "{}")
+            except Exception:
+                args = {}
+            try:
+                out = fn(args)
+            except Exception as e:
+                out = {"error": "tool_exception", "detail": str(e)}
+            msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(out, ensure_ascii=False)})
+    return ""
+
 # ───────────────────────────  main entry  ──────────────────────────────────
 async def call_api(prompt: str, *, context: str = "", system_prompt: str = "",
                    conversation_id=None, temperature: float | None = None,
                    top_p: float | None = None, frequency_penalty: float | None = None,
                    presence_penalty: float | None = None, image_paths: List[str] | None = None,
-                   api_type_override: str | None = None, model_override: str | None = None):
+                   api_type_override: str | None = None, model_override: str | None = None,
+                   tools: Optional[List[ToolSpec]] = None,
+                   tool_runtime: Optional[Dict[str, Any]] = None,
+                   auto_execute_tools: bool = False):
     temp = temperature if temperature is not None else api.temperature
     p_val = top_p if top_p is not None else api.top_p
     freq_pen = frequency_penalty if frequency_penalty is not None else api.frequency_penalty
     pres_pen = presence_penalty if presence_penalty is not None else api.presence_penalty
     provider = api_type_override or api.api_type
     model    = model_override or api.model_name
-    print(Fore.LIGHTMAGENTA_EX + system_prompt)
+
+    print(Fore.LIGHTMAGENTA_EX + (system_prompt or ""))
     print(Fore.LIGHTCYAN_EX + prompt)
+
     content, dims = prepare_image_content(prompt, image_paths or [], provider)
+    tools_payload = adapt_tools(tools, provider)
 
     async def dispatch():
         if api_type_override and not model_override:
@@ -188,16 +311,31 @@ async def call_api(prompt: str, *, context: str = "", system_prompt: str = "",
 
         logging.info("Call → %s | model=%s T=%.2f P=%.2f FP=%.2f PP=%.2f",
                      provider, cfg.model_name, temp, p_val, freq_pen, pres_pen)
-        kwargs = dict(system_prompt=system_prompt, context=context,
-                      temperature=temp, top_p=p_val,
-                      frequency_penalty=freq_pen, presence_penalty=pres_pen,
-                      config=cfg)
-        if provider == "openai":     return await _call_openai(content, **kwargs)
-        if provider == "ollama":     return await _call_ollama(content, **kwargs)
-        if provider == "anthropic":  return await _call_anthropic(content, **kwargs)
-        if provider == "vllm":       return await _call_vllm(content, **kwargs)
-        if provider == "openrouter": return await _call_openrouter(content, **kwargs)
-        if provider == "gemini":     return await _call_gemini(content, **kwargs)
+
+        if provider in ("openai", "ollama", "openrouter", "vllm"):
+            if provider == "vllm" and not (cfg.api_base or "").rstrip("/").endswith(("/v1",)):
+                pass
+            if auto_execute_tools and tools_payload.get("tools"):
+                return await _openai_compat_call_with_auto_tools(
+                    provider=provider, cfg=cfg,
+                    system_prompt=system_prompt, context=context, content=content,
+                    temperature=temp, top_p=p_val, frequency_penalty=freq_pen, presence_penalty=pres_pen,
+                    tools_payload=tools_payload, tool_runtime=tool_runtime
+                )
+            return await _call_openai_compat(provider, content, system_prompt=system_prompt, context=context,
+                                             temperature=temp, top_p=p_val, frequency_penalty=freq_pen, presence_penalty=pres_pen,
+                                             config=cfg, tools_payload=tools_payload)
+
+        if provider == "anthropic":
+            return await _call_anthropic(content, system_prompt=system_prompt, context=context,
+                                         temperature=temp, top_p=p_val, frequency_penalty=freq_pen, presence_penalty=pres_pen,
+                                         config=cfg, tools_payload=tools_payload)
+
+        if provider == "gemini":
+            return await _call_gemini(content, system_prompt=system_prompt, context=context,
+                                      temperature=temp, top_p=p_val, frequency_penalty=freq_pen, presence_penalty=pres_pen,
+                                      config=cfg, tools_payload=tools_payload)
+
         raise ValueError(provider)
 
     response = await retry_api_call(dispatch)
@@ -226,91 +364,80 @@ async def call_api(prompt: str, *, context: str = "", system_prompt: str = "",
     })
     return response
 
-# ─────────────────────── openai ─────────────────
-async def _call_openai(content, *, system_prompt, context,
-                       temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
-    client = openai.AsyncOpenAI(api_key=config.api_key)
-    msgs = build_chat_messages(system_prompt, context, content)
-    kwargs = {"model":config.model_name, "messages":msgs, "max_completion_tokens":12_000}
-    if not _is_gpt5(config.model_name):
-        kwargs.update(temperature=temperature, top_p=top_p,
-                      frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
-    res = await client.chat.completions.create(**kwargs)
-    return res.choices[0].message.content.strip()
+# ─────────────────────── openai-compatible (openai/ollama/openrouter/vllm) ─────────
+async def _call_openai_compat(provider: str, content, *, system_prompt, context,
+                              temperature, top_p, frequency_penalty, presence_penalty,
+                              config: ProviderConfig, tools_payload: dict):
+    base_url = None
+    api_key = config.api_key
+    max_tokens_key = "max_completion_tokens" if provider == "openai" else "max_tokens"
+    if provider == "ollama":
+        base_url = f"{config.api_base}/v1"
+        api_key = "ollama"
+    elif provider == "openrouter":
+        base_url = config.api_base
+    elif provider == "vllm":
+        base_url = f"{config.api_base}/v1"
 
-# ─────────────────────── ollama ─────────────────
-async def _call_ollama(content, *, system_prompt, context,
-                       temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
-    client = openai.AsyncOpenAI(base_url=f'{config.api_base}/v1', api_key="ollama")
     msgs = build_chat_messages(system_prompt, context, content)
-    res = await client.chat.completions.create(
-        model=config.model_name, messages=msgs,
-        max_tokens=12_000, temperature=temperature, top_p=top_p,
-        frequency_penalty=frequency_penalty, presence_penalty=presence_penalty)
-    return res.choices[0].message.content.strip()
+    m = await _openai_compat_chat(
+        base_url=base_url, api_key=api_key, model=config.model_name, msgs=msgs,
+        temperature=temperature, top_p=top_p, frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
+        tools=tools_payload.get("tools"), tool_choice=tools_payload.get("tool_choice"),
+        max_tokens_key=max_tokens_key, max_tokens_val=12_000,
+        gpt5_no_sampling=_is_gpt5(config.model_name) if provider == "openai" else False
+    )
+    return m.content.strip() if m.content else ""
 
 # ─────────────────────── anthropic ─────────────────
 async def _call_anthropic(content, *, system_prompt, context,
-                          temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
+                          temperature, top_p, frequency_penalty, presence_penalty,
+                          config: ProviderConfig, tools_payload: dict):
     client = anthropic.AsyncAnthropic(api_key=config.api_key)
+    sys = "\n\n".join([s for s in (system_prompt, context) if s]) or None
     res = await client.messages.create(
         model=config.model_name,
-        system=system_prompt,
+        system=sys,
         messages=[{"role":"user","content":content}],
         max_tokens=4096,
-        temperature=temperature)  # ignore top_p per Anthropic constraint
-    return res.content[0].text.strip()
-
-async def _call_vllm(content, *, system_prompt, context,
-                     temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
-    prompt = "\n".join(filter(None, [system_prompt, context, content]))
-    async with aiohttp.ClientSession() as s:
-        res = await s.post(f'{config.api_base}/v1/completions',
-                           headers={"Authorization": f'Bearer {config.api_key}',
-                                    "Content-Type": "application/json"},
-                           json={"model": config.model_name,
-                                 "prompt": prompt,
-                                 "max_tokens": 4096,
-                                 "temperature": temperature,
-                                 "top_p": top_p})
-        if res.status != 200: raise Exception(f"vLLM status {res.status}: {await res.text()}")
-        data = await res.json()
-        return data["choices"][0]["text"].strip()
-
-async def _call_openrouter(content, *, system_prompt, context,
-                           temperature, top_p, frequency_penalty, presence_penalty, config: ProviderConfig):
-    client = openai.AsyncOpenAI(base_url=config.api_base, api_key=config.api_key)
-    msgs = build_chat_messages(system_prompt, context, content)
-    res = await client.chat.completions.create(
-        model=config.model_name,
-        messages=msgs,
-        max_tokens=12000,
         temperature=temperature,
-        top_p=top_p,
-        frequency_penalty=frequency_penalty,
-        presence_penalty=presence_penalty)
-    return res.choices[0].message.content.strip()
+        **({} if not tools_payload.get("tools") else {"tools": tools_payload["tools"]})
+    )
+    if res.content and hasattr(res.content[0], "text"): return res.content[0].text.strip()
+    return str(res)
 
 # ─────────────────────── gemini ─────────────────
 def _mime(p): return mimetypes.guess_type(p)[0] or "image/jpeg"
 
 def _gemini_parts_from_paths(paths):
-  ps=[]
-  for p in paths:
-    b=open(p,"rb").read()
-    ps.append(types.Part.from_bytes(data=b,mime_type=_mime(p)))
-  return ps
+    ps=[]
+    for p in paths:
+        b=open(p,"rb").read()
+        ps.append(types.Part.from_bytes(data=b,mime_type=_mime(p)))
+    return ps
 
-async def _call_gemini(content,*,system_prompt,context,temperature,top_p,frequency_penalty,presence_penalty,config):
-  client=genai.Client(api_key=config.api_key)
-  sys="\n\n".join([s for s in (system_prompt,context) if s]) or None
-  if isinstance(content,list): utext,imgs=content[0],content[1:]
-  else: utext,imgs=str(content),[]
-  paths=[getattr(i,"filename",None) for i in imgs]
-  parts=_gemini_parts_from_paths(paths) if paths and all(paths) else list(imgs)
-  cfg=types.GenerateContentConfig(system_instruction=sys,temperature=temperature,top_p=top_p,top_k=64,max_output_tokens=8192,response_mime_type="text/plain")
-  r=await asyncio.to_thread(client.models.generate_content,model=config.model_name,contents=[*parts,utext],config=cfg)
-  return r.text.strip()
+async def _call_gemini(content, *, system_prompt, context,
+                       temperature, top_p, frequency_penalty, presence_penalty,
+                       config: ProviderConfig, tools_payload: dict):
+    client = genai.Client(api_key=config.api_key)
+    sys = "\n\n".join([s for s in (system_prompt, context) if s]) or None
+    if isinstance(content, list):
+        utext, imgs = content[0], content[1:]
+    else:
+        utext, imgs = str(content), []
+    paths = [getattr(i, "filename", None) for i in imgs]
+    parts = _gemini_parts_from_paths(paths) if paths and all(paths) else list(imgs)
+    cfg = types.GenerateContentConfig(
+        system_instruction=sys,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=64,
+        max_output_tokens=8192,
+        response_mime_type="text/plain",
+        **({} if not tools_payload.get("tools") else {"tools": tools_payload["tools"]})
+    )
+    r = await asyncio.to_thread(client.models.generate_content, model=config.model_name, contents=[*parts, utext], config=cfg)
+    return (getattr(r, "text", None) or "").strip()
 
 # ─────────────────────── embeddings helper ────────────────────
 async def get_embeddings(text: str | list[str],
@@ -343,6 +470,20 @@ async def get_embeddings(text: str | list[str],
             return data[0] if isinstance(data, list) else data["embeddings"][0]
     raise ValueError(f"Embeddings not supported for {provider}")
 
+# ─────────────────────────── tool example ───────────────────────────
+def tool_get_time(_: dict):
+    return {"utc_time": datetime.now(timezone.utc).isoformat()}
+
+TOOL_RUNTIME = {"get_time": tool_get_time}
+
+TOOL_SPECS = [
+    ToolSpec(
+        name="get_time",
+        description="Return current UTC time",
+        parameters={"type":"object","properties":{},"required":[]}
+    )
+]
+
 # ───────────────────────────  cli  ─────────────────────────────────────────
 if __name__ == "__main__":
     import argparse, asyncio as _aio
@@ -350,6 +491,7 @@ if __name__ == "__main__":
     ap.add_argument("--api", required=True,
                     choices=["ollama", "openai", "anthropic", "vllm", "openrouter", "gemini"])
     ap.add_argument("--model", help="model override")
+    ap.add_argument("--tools", action="store_true", help="enable tool calling (example: get_time)")
     args = ap.parse_args()
 
     cfg = get_api_config(args.api, args.model)
@@ -362,6 +504,11 @@ if __name__ == "__main__":
         try:
             user_in = input(">>> ")
             if user_in.lower() in ("quit", "exit"): break
-            _aio.run(call_api(user_in))
+            _aio.run(call_api(
+                user_in,
+                tools=TOOL_SPECS if args.tools else None,
+                tool_runtime=TOOL_RUNTIME if args.tools else None,
+                auto_execute_tools=bool(args.tools) and args.api in ("openai","ollama","openrouter","vllm")
+            ))
         except KeyboardInterrupt:
             break

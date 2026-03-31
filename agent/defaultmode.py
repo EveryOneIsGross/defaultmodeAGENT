@@ -3,14 +3,10 @@ import random
 from collections import defaultdict
 import logging
 from datetime import datetime
-import json
 import re
-import os
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
-from logger import BotLogger
-from bot_config import DMNConfig
 
 class DMNProcessor:
     """
@@ -58,6 +54,8 @@ class DMNProcessor:
         # DMN-specific API settings
         self.dmn_api_type = dmn_api_type
         self.dmn_model = dmn_model
+        # Seeds queued for priority processing (e.g. post-spike orphans)
+        self.pending_seeds: list = []
 
         self.logger.info(f"DMN Processor initialized with API: {dmn_api_type or 'default'}, Model: {dmn_model or 'default'}")
 
@@ -117,7 +115,7 @@ class DMNProcessor:
             try:
                 user = self.bot.get_user(int(user_id))
                 user_name = user.name if user else f"Unknown({user_id})"
-            except:
+            except Exception:
                 user_name = f"Unknown({user_id})"
             top_users_with_names.append((user_name, count))
         
@@ -165,17 +163,23 @@ class DMNProcessor:
     async def _generate_thought(self):
         """Generate new thought through memory combination and insight generation."""
         max_retries = 8
+        from_pending = False
         for attempt in range(max_retries):
-            selection_result = self._select_random_memory()
-            if not selection_result:
-                return
-            
-            user_id, seed_memory = selection_result
+            if self.pending_seeds and attempt == 0:
+                user_id, seed_memory = self.pending_seeds.pop(0)
+                from_pending = True
+                self.logger.info(f"dmn.pending_seed consumed user={user_id} memory={seed_memory[:80]}")
+            else:
+                from_pending = False
+                selection_result = self._select_random_memory()
+                if not selection_result:
+                    return
+                user_id, seed_memory = selection_result
             
             try:
                 user = await self.bot.fetch_user(int(user_id))
                 user_name = user.name if user else "Unknown User"
-            except Exception as e:
+            except Exception:
                 user_name = "Unknown User"
             # Run memory search in executor to prevent blocking
             try:
@@ -184,7 +188,7 @@ class DMNProcessor:
                     None,
                     lambda: self.memory_index.search(seed_memory, user_id=user_id, k=int(self.top_k))
                 )
-            except Exception as e:
+            except Exception:
                 continue
             # Filter out the seed memory from results and apply weight threshold
             related_memories = [
@@ -196,9 +200,34 @@ class DMNProcessor:
             # If we found any related memories, we can proceed
             if related_memories:
                 break
+            # No related memories - this is an orphan, delegate to spike immediately
+            # If this seed came from pending_seeds it already had its spike chance — bail cleanly
+            if from_pending:
+                self.logger.info("dmn.pending_seed still orphaned after spike—dropping")
+                self._cleanup_disconnected_memories()
+                return
+            self.logger.info(f"dmn.orphan detected—delegating to spike")
+            # Apply flat weight decay so this orphan is less likely to dominate future selection
+            self.memory_weights[user_id][seed_memory] *= (1 - self.decay_rate)
+            self.logger.info(f"dmn.orphan weight decayed by {self.decay_rate:.2f} → {self.memory_weights[user_id][seed_memory]:.4f}")
+            if hasattr(self.bot, 'spike_processor') and self.bot.spike_processor:
+                from spike import handle_orphaned_memory
+                fired = await handle_orphaned_memory(self.bot.spike_processor, seed_memory)
+                if fired:
+                    # Queue under bot's own user_id so the next search finds the spike
+                    # interaction memory (stored under bot.user.id, not the original user)
+                    bot_uid = str(self.bot.user.id) if self.bot.user else user_id
+                    self.logger.info(f"spike.fired from dmn orphan—queuing under bot_uid={bot_uid} for dmn reprocessing")
+                    self.pending_seeds.append((bot_uid, seed_memory))
+                    self._cleanup_disconnected_memories()
+                    return
+                else:
+                    self.logger.info("spike.declined (no viable surface or cooldown)—retrying seed")
+            # If spike didn't fire, continue retry loop for a new seed
             self.logger.info(f"Attempt {attempt + 1}: No related memories found, trying another seed memory")
             if attempt == max_retries - 1:
-                self.logger.info("Max retries reached without finding any memories")
+                self.logger.info("Max retries reached without finding related memories or spike target")
+                self._cleanup_disconnected_memories()
                 return
 
         # Log DMN process start
@@ -333,8 +362,8 @@ class DMNProcessor:
         new_intensity = min(100, max(0, int(100 * intensity_multiplier)))
         # intensity already computed above as new_intensity and density already computed
         self.amygdala_response=new_intensity
-        I=new_intensity/100.0
-        self.temperature=0.3+I
+        intensity_norm=new_intensity/100.0
+        self.temperature=0.3+intensity_norm
         self.bot.amygdala_response=new_intensity
         # Convert intensity to temperature before passing to API client
         self.bot.update_api_temperature(self.temperature)
@@ -379,7 +408,7 @@ class DMNProcessor:
                         memory_user = await self.bot.fetch_user(int(memory_user_id))
                         if memory_user and memory_user.name != user_name:
                             memory_users.add(memory_user.name)
-                    except:
+                    except Exception:
                         continue
             
             # Save generated thought as new memory
@@ -405,16 +434,17 @@ class DMNProcessor:
                         self.logger.info(f"Memory [{memory_id}]: Removing terms: {', '.join(terms_removed)}")
                         #self.logger.info(f"Memory [{memory_id}]: Remaining terms: {', '.join(remaining_terms)}")
                         # Update inverted index directly
-                        for term in terms_removed:
-                            if term in self.memory_index.inverted_index:
-                                self.memory_index.inverted_index[term] = [
-                                    mid for mid in self.memory_index.inverted_index[term] 
-                                    if mid != memory_id
-                                ]
-                                # Clean up empty terms
-                                if not self.memory_index.inverted_index[term]:
-                                    del self.memory_index.inverted_index[term]
-                                    self.logger.info(f"Removed empty term entry: {term}")
+                        with self.memory_index._mut:
+                            for term in terms_removed:
+                                if term in self.memory_index.inverted_index:
+                                    self.memory_index.inverted_index[term] = [
+                                        mid for mid in self.memory_index.inverted_index[term]
+                                        if mid != memory_id
+                                    ]
+                                    # Clean up empty terms
+                                    if not self.memory_index.inverted_index[term]:
+                                        del self.memory_index.inverted_index[term]
+                                        self.logger.info(f"Removed empty term entry: {term}")
 
                 # Then update weights
                 for memory, memory_id in state['top_memories'][1:]:  # Skip seed memory
@@ -458,33 +488,42 @@ class DMNProcessor:
             })
 
     def _cleanup_disconnected_memories(self):
-        connected=set(); [connected.update(v) for v in self.memory_index.inverted_index.values()]
-        for uid,mems in list(self.memory_index.user_memories.items()):
-            disc=sorted([i for i in mems if i not in connected])
-            if not disc: continue
-            texts=[self.memory_index.memories[i] for i in disc]
-            removed=set(disc)
-            old_mem=self.memory_index.memories
-            self.memory_index.memories=[m for i,m in enumerate(old_mem) if i not in removed]
-            def remap(i):
-                c=0
-                for d in disc:
-                    if d<i: c+=1
-                    else: break
-                return i-c
-            for u,ls in list(self.memory_index.user_memories.items()):
-                new_ls=[remap(i) for i in ls if i not in removed]
-                if new_ls: self.memory_index.user_memories[u]=new_ls
-                else: self.memory_index.user_memories.pop(u,None)
-            for w,ls in list(self.memory_index.inverted_index.items()):
-                nl=[remap(i) for i in ls if i not in removed]
-                if nl: self.memory_index.inverted_index[w]=nl
-                else: self.memory_index.inverted_index.pop(w,None)
-            for u,weights in list(self.memory_weights.items()):
-                self.memory_weights[u]={remap(k):v for k,v in weights.items() if k not in removed}
-            self.logger.info(f"Cleaned up {len(disc)} disconnected memories for user {uid}")
-            self.logger.info(f"Disconnected memories: {texts}")
-            self.logger.log({'event':'dmn_memory_cleanup','timestamp':datetime.now().isoformat(),'user_id':uid,'disconnected_memories':texts})
+        with self.memory_index._mut:
+            connected=set()
+            [connected.update(v) for v in self.memory_index.inverted_index.values()]
+            for uid,mems in list(self.memory_index.user_memories.items()):
+                disc=sorted([i for i in mems if i not in connected])
+                if not disc:
+                    continue
+                texts=[self.memory_index.memories[i] for i in disc]
+                removed=set(disc)
+                old_mem=self.memory_index.memories
+                self.memory_index.memories=[m for i,m in enumerate(old_mem) if i not in removed]
+                def remap(i):
+                    c=0
+                    for d in disc:
+                        if d<i:
+                            c+=1
+                        else:
+                            break
+                    return i-c
+                for u,ls in list(self.memory_index.user_memories.items()):
+                    new_ls=[remap(i) for i in ls if i not in removed]
+                    if new_ls:
+                        self.memory_index.user_memories[u]=new_ls
+                    else:
+                        self.memory_index.user_memories.pop(u,None)
+                for w,ls in list(self.memory_index.inverted_index.items()):
+                    nl=[remap(i) for i in ls if i not in removed]
+                    if nl:
+                        self.memory_index.inverted_index[w]=nl
+                    else:
+                        self.memory_index.inverted_index.pop(w,None)
+                for u,weights in list(self.memory_weights.items()):
+                    self.memory_weights[u]={remap(k):v for k,v in weights.items() if k not in removed}
+                self.logger.info(f"Cleaned up {len(disc)} disconnected memories for user {uid}")
+                self.logger.info(f"Disconnected memories: {texts}")
+                self.logger.log({'event':'dmn_memory_cleanup','timestamp':datetime.now().isoformat(),'user_id':uid,'disconnected_memories':texts})
 
 
     def set_mode(self, mode):

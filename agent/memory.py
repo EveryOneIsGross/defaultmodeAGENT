@@ -1,10 +1,18 @@
-import os,json,pickle,string,re,math,asyncio,tempfile,shutil,uuid,threading,time
-from collections import defaultdict,Counter,deque
-from typing import List,Tuple,Optional,Dict,Any
+import os
+import json
+import pickle
+import string
+import re
+import math
+import asyncio
+import uuid
+import threading
+import time
+from collections import defaultdict,Counter
 from datetime import datetime,timedelta
 from bot_config import config
 from tokenizer import get_tokenizer,count_tokens as _ct
-from logger import BotLogger, logging
+from logger import logging
 
 MAX_TOKENS=config.search.max_tokens
 CONTEXT_CHUNKS=config.search.context_chunks
@@ -135,7 +143,11 @@ class UserMemoryIndex:
         self.load_cache()
     def _snapshot(self):
         with self._mut:
-            return {'inverted_index':self.inverted_index,'memories':self.memories,'user_memories':self.user_memories}
+            return {
+                'inverted_index': {k: list(v) for k, v in self.inverted_index.items()},
+                'memories': list(self.memories),
+                'user_memories': {k: list(v) for k, v in self.user_memories.items()}
+            }
     def clean_text(self,text):
         text=text.replace("<|endoftext|>","").replace("<|im_start|>","").replace("<|im_end|>","").lower()
         text=text.translate(str.maketrans(string.punctuation,' '*len(string.punctuation)))
@@ -153,20 +165,27 @@ class UserMemoryIndex:
         self._saver.request()
     async def add_memory_async(self,user_id,memory_text):
         loop=asyncio.get_event_loop(); await loop.run_in_executor(None,lambda: self.add_memory(user_id,memory_text))
+    def _compact(self):
+        remap={}; new_mems=[]
+        for old_id,m in enumerate(self.memories):
+            if m is not None: remap[old_id]=len(new_mems); new_mems.append(m)
+        self.memories=new_mems
+        for uid in list(self.user_memories.keys()):
+            self.user_memories[uid]=[remap[mid] for mid in self.user_memories[uid] if mid in remap]
+            if not self.user_memories[uid]: del self.user_memories[uid]
+        new_idx=defaultdict(list)
+        for w,pl in self.inverted_index.items():
+            remapped=[remap[mid] for mid in pl if mid in remap]
+            if remapped: new_idx[w]=remapped
+        self.inverted_index=new_idx
     def clear_user_memories(self,user_id):
         with self._mut:
             if user_id not in self.user_memories: return
-            ids=sorted(self.user_memories[user_id],reverse=True)
-            for memory_id in ids:
-                self.memories.pop(memory_id)
-                for uid,mems in list(self.user_memories.items()):
-                    self.user_memories[uid]=[mid if mid<memory_id else mid-1 for mid in mems if mid!=memory_id]
-                    if not self.user_memories[uid]: del self.user_memories[uid]
-                for word in list(self.inverted_index.keys()):
-                    pl=[mid if mid<memory_id else mid-1 for mid in self.inverted_index[word] if mid!=memory_id]
-                    if pl: self.inverted_index[word]=pl
-                    else: del self.inverted_index[word]
-        self.logger.info(f"mem.clear user={user_id} removed={len(ids)}")
+            kill=set(self.user_memories[user_id]); ct=len(kill)
+            for mid in kill: self.memories[mid]=None
+            del self.user_memories[user_id]
+            self._compact()
+        self.logger.info(f"mem.clear user={user_id} removed={ct}")
         self._saver.request()
     def search(self,query,k=5,user_id=None,dedup_threshold=0.95):
         cq=self.clean_text(query); qws=cq.split()
@@ -203,7 +222,7 @@ class UserMemoryIndex:
                 if not dup:
                     res.append((m,sc)); seen.add(cm); toks+=mt
                     if len(res)>=k: break
-        self.logger.info(f"mem.search q='{query[:64]}' got={len(res)}")
+        self.logger.info(f"mem.search q='{query[:256]}' got={len(res)}")
         return res
     def _calculate_similarity(self,t1,t2):
         def grams(t,n=3): return set(t[i:i+n] for i in range(len(t)-n+1))
@@ -226,33 +245,19 @@ class UserMemoryIndex:
         if os.path.exists(cf):
             with open(cf,'rb') as f: d=pickle.load(f)
             with self._mut:
-                self.inverted_index=d.get('inverted_index',defaultdict(list))
+                self.inverted_index=defaultdict(list,d.get('inverted_index',{}))
                 self.memories=d.get('memories',[])
-                self.user_memories=d.get('user_memories',defaultdict(list))
-                mc=len(self.memories)
-                for w in list(self.inverted_index.keys()):
-                    self.inverted_index[w]=[mid for mid in self.inverted_index[w] if mid<mc and self.memories[mid] is not None]
-                    if not self.inverted_index[w]: del self.inverted_index[w]
-                for uid in list(self.user_memories.keys()):
-                    self.user_memories[uid]=[mid for mid in self.user_memories[uid] if mid<mc and self.memories[mid] is not None]
-                    if not self.user_memories[uid]: del self.user_memories[uid]
+                self.user_memories=defaultdict(list,d.get('user_memories',{}))
                 if cleanup_orphans:
                     allm=set(); [allm.update(m) for m in self.user_memories.values()]
-                    orph=[(i,m) for i,m in enumerate(self.memories) if i not in allm]
+                    orph=[i for i,m in enumerate(self.memories) if i not in allm and m is not None]
                     if orph: self.logger.warning(f"orphans={len(orph)}")
+                has_nulls=any(m is None for m in self.memories)
+                if has_nulls and cleanup_nulls:
+                    self._compact()
+                    self.logger.info("mem.compact nulls.removed"); self.save_cache()
                 tot=len(self.memories); act=len([m for m in self.memories if m is not None])
                 self.logger.info(f"mem.load totals={tot} active={act} users={len(self.user_memories)} vocab={len(self.inverted_index)}")
-                if tot!=act and cleanup_nulls:
-                    nulls=[(i,m) for i,m in enumerate(self.memories) if m is None]
-                    for idx,_ in sorted(nulls,reverse=True):
-                        self.memories.pop(idx)
-                        for uid in list(self.user_memories.keys()):
-                            self.user_memories[uid]=[mid if mid<idx else mid-1 for mid in self.user_memories[uid] if mid!=idx]
-                            if not self.user_memories[uid]: del self.user_memories[uid]
-                        for w in list(self.inverted_index.keys()):
-                            self.inverted_index[w]=[mid if mid<idx else mid-1 for mid in self.inverted_index[w] if mid!=idx]
-                            if not self.inverted_index[w]: del self.inverted_index[w]
-                    self.logger.info("mem.compact nulls.removed"); self.save_cache()
             return True
         return False
     async def search_async(self,query,k=32,user_id=None,dedup_threshold=0.95):

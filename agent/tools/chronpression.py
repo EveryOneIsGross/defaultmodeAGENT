@@ -142,10 +142,14 @@ def fuzzy_common_score(word, threshold=75):
 
 def length_bucket(word):
     n = len(word)
-    if n <= 3: return 'xs'
-    if n <= 5: return 's'
-    if n <= 8: return 'm'
-    if n <= 12: return 'l'
+    if n <= 3:
+        return 'xs'
+    if n <= 5:
+        return 's'
+    if n <= 8:
+        return 'm'
+    if n <= 12:
+        return 'l'
     return 'xl'
 
 def prefix_key(word, n=3):
@@ -197,8 +201,10 @@ def compute_node_salience(content_words, edges, compression=0.5):
     salience = defaultdict(float)
     for (w1, w2), weight in edges.items():
         novelty = 0
-        if w1 not in COMMON_WORDS: novelty += 1
-        if w2 not in COMMON_WORDS: novelty += 1
+        if w1 not in COMMON_WORDS:
+            novelty += 1
+        if w2 not in COMMON_WORDS:
+            novelty += 1
         boost = weight * (1.0 + novelty * 0.5) * edge_weight_factor
         salience[w1] += boost
         salience[w2] += boost
@@ -273,7 +279,8 @@ def extract_spanning_path(words, keep_ratio, node_salience, node_edge_sum, prote
         for i in range(len(words) - 1):
             pair = (wl_list[i], wl_list[i + 1])
             if pair in protected_bigrams and (i in kept or i + 1 in kept):
-                kept.add(i); kept.add(i + 1)
+                kept.add(i)
+                kept.add(i + 1)
     return kept
 
 def sentence_density(sentence, avg_len):
