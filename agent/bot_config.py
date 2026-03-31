@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from typing import Set, Dict
+from typing import ClassVar, Set, Dict
 from logger import BotLogger
 from datetime import datetime, timedelta
 import discord
@@ -34,9 +34,15 @@ class APIConfig(BaseModel):
 
 
 class FileConfig(BaseModel):
-    """File handling configuration"""
-    allowed_extensions: Set[str] = Field(default={'.py', '.js', '.html', '.css', '.json', '.md', '.txt'})
-    allowed_image_extensions: Set[str] = Field(default={'.jpg', '.jpeg', '.png', '.gif', '.bmp'})
+    allowed_extensions: Set[str] = Field(default={'.py','.js','.html','.css','.json','.md','.txt'})
+    allowed_image_extensions: Set[str] = Field(default={'.jpg','.jpeg','.png','.gif','.bmp'})
+
+    # single source of truth
+    text_ingestion_mode: str = Field(default="hybrid")
+    truncate_length: int = Field(default=8000)
+    chronpress_threshold: int = Field(default=16000)
+    chronpress_target_chars: int = Field(default=8000)
+
 
 class SearchConfig(BaseModel):
     """Search and indexing configuration"""
@@ -46,10 +52,10 @@ class SearchConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """Conversation handling configuration"""
-    max_history: int = Field(default=24)
-    minimal_history: int = Field(default=6)
-    truncation_length: int = Field(default=512)
-    harsh_truncation_length: int = Field(default=128)
+    max_history: int = Field(default=32)
+    minimal_history: int = Field(default=12)
+    truncation_length: int = Field(default=768)
+    harsh_truncation_length: int = Field(default=256)
     web_content_truncation_length: int = Field(default=8000)
 
 class PersonaConfig(BaseModel):
@@ -57,18 +63,11 @@ class PersonaConfig(BaseModel):
     default_amygdala_response: int = Field(default=70)
     temperature: float = Field(default_factory=lambda: 70/100.0)
     hippocampus_bandwidth: float = Field(default=0.70) 
-    memory_capacity: int = Field(default=30)
+    memory_capacity: int = Field(default=32)
     use_hippocampus_reranking: bool = Field(default=True)
     reranking_blend_factor: float = Field(default=0.5, description="Weight for blending initial search scores with reranking similarity (0-1)") 
     minimum_reranking_threshold: float = Field(default=0.64, description="Minimum threshold for reranked memories") 
     mood_coefficient: float = Field(default=0.15, description="Coefficient (0-1) that controls how strongly amygdala state lowers or raises the memory-selection threshold")
-
-class NotionConfig(BaseModel):
-    """Notion database configuration"""
-    calendar_db_id: str = Field(default=os.getenv('CALENDAR_DB_ID'))
-    projects_db_id: str = Field(default=os.getenv('PROJECTS_DB_ID'))
-    tasks_db_id: str = Field(default=os.getenv('TASKS_DB_ID'))
-    kanban_db_id: str = Field(default=os.getenv('KANBAN_DB_ID'))
 
 class SystemConfig(BaseModel):
     """System-wide configuration"""
@@ -80,7 +79,7 @@ class AttentionConfig(BaseModel):
     threshold: int = Field(default=60, description="Fuzzy match threshold for attention triggers (0-100)")
     default_top_n: int = Field(default=32, description="Default number of top trigrams to extract from memory")
     default_min_occ: int = Field(default=8, description="Minimum occurrence count for trigrams to be considered")
-    refresh_interval_hours: int = Field(default=2, description="Hours between trigram cache refreshes")
+    refresh_interval_hours: int = Field(default=24, description="Hours between trigram cache refreshes")
     cooldown_minutes: float = Field(default=0.30, description="Minutes between attention trigger activations")
 
     stop_words: Set[str] = Field(default_factory=lambda: {
@@ -116,9 +115,9 @@ class AttentionConfig(BaseModel):
 
 class DMNConfig(BaseModel):
     """DMN configuration"""
-    tick_rate: int = Field(default=1200, description="Time between thought generations in seconds")
+    tick_rate: int = Field(default=240, description="Time between thought generations in seconds")
     temperature: float = Field(default=0.7, description="Base creative temperature")
-    temperature_max: float = Field(default=1.5)
+    temperature_max: float = Field(default=1.8)
     combination_threshold: float = Field(default=0.2, description="Minimum relevance score for memory combinations")
     decay_rate: float = Field(default=0.1, description="Rate at which used memory weights decrease")
     top_k: int = Field(default=24, description="Top k memories to consider for combination")
@@ -132,15 +131,6 @@ class DMNConfig(BaseModel):
     dmn_api_type: str = Field(default=None, description="API type for DMN processor (ollama, openai, anthropic, etc.)")
     dmn_model: str = Field(default=None, description="Model name for DMN processor")
     
-    # Focus presets
-    consciousness_default: str = Field(default="creative")
-    consciousness_presets: Dict[str, Dict[str, float]] = Field(default_factory=lambda:{
-        "hyperfocus": {"temp_base":0.20,"temp_span":0.40, "p_sparse":0.80, "p_mid":0.65, "p_dense":0.50},      # low T + low p
-        "creative":   {"temp_base":0.80,"temp_span":0.70,"p_sparse":0.92,"p_mid":0.90,"p_dense":0.88},      # high T + low p
-        "drowsy":     {"temp_base":0.30,"temp_span":0.20,"p_sparse":0.99,"p_mid":0.985,"p_dense":0.98},     # low T + high p
-        "dream":      {"temp_base":0.90,"temp_span":0.80,"p_sparse":0.99,"p_mid":0.99,"p_dense":0.985}      # high T + high p
-    })
-
     # Memory presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {
         "forgetful": {
@@ -169,6 +159,20 @@ class DMNConfig(BaseModel):
         }
     })
 
+class SpikeConfig(BaseModel):
+    """Spike processor configuration - handles orphaned memory outreach"""
+    context_n: int = Field(default=50, description="Initial message count to compress per surface")
+    max_expansion: int = Field(default=150, description="Maximum message count for tie-breaking expansion")
+    expansion_step: int = Field(default=25, description="Step size when expanding context for ties")
+    match_threshold: float = Field(default=0.35, description="Minimum score for surface to be viable")
+    compression_ratio: float = Field(default=0.6, description="Chronpression ratio for surface context")
+    cooldown_seconds: int = Field(default=120, description="Minimum seconds between spike fires")
+    max_surfaces: int = Field(default=8, description="Maximum recent surfaces to consider")
+    recency_window_hours: int = Field(default=24, description="Hours to look back for engaged surfaces")
+    memory_k: int = Field(default=12, description="Number of memories to retrieve for context")
+    memory_truncation: int = Field(default=512, description="Max tokens per memory in context")
+    theme_weight: float = Field(default=0.3, description="Weight for theme resonance in scoring (0-1)")
+
 class EmbeddingConfig(BaseModel):
     """Pydantic model for embedding configuration."""
     provider: str = Field( default='ollama', description="Provider for embedding service" )
@@ -188,32 +192,23 @@ class DiscordConfig(BaseModel):
     channel_id: str = Field(default=os.getenv('DISCORD_CHANNEL_ID'))
     bot_manager_role: str = Field(default='Ally')
     
-    # Command permission groups - properly tiered
-    system_commands: Set[str] = Field(default={ 'kill', 'resume', 'get_logs', 'dmn', 'mentions', 'persona', 'search_memories' })
-    management_commands: Set[str] = Field(default={ 'add_memory', 'index_repo', 'reranking', 'clear_memories', 'attention' })
+    system_commands: Set[str] = Field(default={ 'kill', 'resume', 'get_logs', 'dmn', 'mentions', 'persona', 'search_memories', 'spike' })
+    management_commands: Set[str] = Field(default={ 'add_memory', 'index_repo', 'reranking', 'clear_memories', 'attention', 'spike' })
     general_commands: Set[str] = Field(default={ 'summarize', 'ask_repo', 'repo_file_chat', 'analyze_file' })
+    bot_action_commands: Set[str] = Field(default={ 'help', 'dmn', 'persona', 'add_memory', 'ask_repo', 'search_memories', 'kill', 'attention' })
 
     def has_command_permission(self, command_name: str, ctx) -> bool:
-        """Check if user has permission to use a command.
-        
-        Args:
-            command_name: Name of the command being checked
-            ctx: Discord command context
-            
-        Returns:
-            bool: True if user has permission to use command
-        """
-        # Check if command exists in any permission group
         if command_name not in (
             self.system_commands | 
             self.management_commands | 
             self.general_commands
         ):
             return False
-        # General commands are always allowed
+        # bot self-invocation - restricted to bot_action_commands
+        if ctx.author.bot:
+            return command_name in self.bot_action_commands
         if command_name in self.general_commands:
             return True
-        # For DM channels, check permissions across all mutual guilds
         if isinstance(ctx.channel, discord.DMChannel):
             has_admin = False
             has_ally = False
@@ -221,32 +216,61 @@ class DiscordConfig(BaseModel):
                 member = guild.get_member(ctx.author.id)
                 if not member:
                     continue
-                # Check admin permissions
                 if (member.guild_permissions.administrator or 
                     member.guild_permissions.manage_guild):
                     has_admin = True
                     break
-                # Check ally role
                 if any(role.name == self.bot_manager_role for role in member.roles):
                     has_ally = True
-            # System commands require admin permissions
             if command_name in self.system_commands:
                 return has_admin
-            # Management commands require either admin or ally role
             if command_name in self.management_commands:
                 return has_admin or has_ally
             return False
-
-        # For guild channels, check current guild permissions
         if (ctx.author.guild_permissions.administrator or 
             ctx.author.guild_permissions.manage_guild):
             return True
-        # Check ally role for management commands
         if (command_name in self.management_commands and
             any(role.name == self.bot_manager_role for role in ctx.author.roles)):
             return True
         return False
     
+class PromptSchema(BaseModel):
+    """Single source of truth for required prompt template variables.
+
+    Use PromptSchema.required_system and PromptSchema.required_formats
+    in both the TUI validator and discord_bot.py format-string checks.
+    """
+
+    required_system: ClassVar[Dict[str, Set[str]]] = {
+        "default_chat": {"amygdala_response"},
+        "default_web_chat": {"amygdala_response"},
+        "repo_file_chat": {"amygdala_response"},
+        "channel_summarization": {"amygdala_response"},
+        "ask_repo": {"amygdala_response"},
+        "thought_generation": {"amygdala_response"},
+        "file_analysis": {"amygdala_response"},
+        "image_analysis": {"amygdala_response"},
+        "combined_analysis": {"amygdala_response"},
+        "spike_engagement": {"amygdala_response", "themes"},
+        "attention_triggers": set(),
+    }
+    required_formats: ClassVar[Dict[str, Set[str]]] = {
+        "chat_with_memory": {"context", "user_name", "user_message"},
+        "introduction": {"context", "user_name", "user_message"},
+        "introduction_web": {"context", "user_name", "user_message"},
+        "analyze_code": {"context", "code_content", "user_name", "user_message"},
+        "summarize_channel": {"context", "content"},
+        "ask_repo": {"context", "question"},
+        "repo_file_chat": {"file_path", "code_type", "repo_code", "user_task_description", "context"},
+        "generate_thought": {"user_name", "memory_text"},
+        "analyze_image": {"context", "filename", "user_message", "user_name"},
+        "analyze_file": {"context", "filename", "file_content", "user_message", "user_name"},
+        "analyze_combined": {"context", "image_files", "text_files", "user_message", "user_name"},
+        "spike_engagement": {"tension_desc", "memory", "memory_context", "conversation_context", "location", "timestamp"},
+    }
+
+
 class BotConfig(BaseModel):
     """Main configuration container"""
     api: APIConfig = Field(default_factory=APIConfig)
@@ -255,14 +279,35 @@ class BotConfig(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
-    notion: NotionConfig = Field(default_factory=NotionConfig)
     system: SystemConfig = Field(default_factory=SystemConfig)
     logging: LogConfig = Field(default_factory=LogConfig)
     attention: AttentionConfig = Field(default_factory=AttentionConfig)
     dmn: DMNConfig = Field(default_factory=DMNConfig)
+    spike: SpikeConfig = Field(default_factory=SpikeConfig)
 
 # Create global config instance
 config = BotConfig()
+
+def apply_overrides(bot_name: str) -> None:
+    """Merge cache/{bot_name}/config_overrides.json into the global config object."""
+    import json
+    from pathlib import Path
+    p = Path(config.logging.base_log_dir) / bot_name / "config_overrides.json"
+    if not p.exists():
+        return
+    try:
+        overrides = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for section, values in overrides.items():
+        sub = getattr(config, section, None)
+        if sub is None or not isinstance(values, dict):
+            continue
+        for k, v in values.items():
+            try:
+                setattr(sub, k, v)
+            except Exception:
+                pass
 
 def init_logging():
     """Initialize global logging after config is fully loaded."""

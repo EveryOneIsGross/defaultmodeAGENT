@@ -1,0 +1,210 @@
+/* Mono: black on pink */
+$bg: #ffb6c1;
+
+/* Base */
+Screen {
+    background: $bg;
+    color: black;
+    scrollbar-background: black;
+    scrollbar-background-hover: black;
+    scrollbar-background-active: black;
+    scrollbar-color: $bg;
+    scrollbar-color-hover: $bg;
+    scrollbar-color-active: $bg;
+    scrollbar-corner-color: black;
+}
+Static { color: black; }
+Label { color: black; }
+
+/* Header/Footer */
+Header { background: $bg; color: black; border: none; }
+Footer { background: $bg; color: black; border: none; height: auto; }
+FooterKey { background: $bg; color: black; border: none; }
+FooterKey > .footer-key--key { color: $bg; background: black; }
+FooterKey > .footer-key--description { color: black; background: $bg; }
+FooterKey:hover { color: black; background: $bg; }
+
+/* Tabs */
+TabbedContent { height: 1fr; border: none; background: $bg; }
+ContentSwitcher { height: 1fr; border: none; background: $bg; }
+Tabs { background: $bg; height: 2; border: none; }
+Tab { background: $bg; color: black; border: none; margin: 0 1 0 0; }
+Tab:hover { background: $bg; color: black; border: none; }
+Tab.-active { background: black; color: $bg; }
+Tabs:focus Tab.-active { background: black; color: $bg; text-style: none; }
+Underline > .underline--bar { color: black; background: $bg; }
+TabPane { height: 1fr; padding: 1; border: none; background: $bg; }
+
+/* Buttons */
+Button { background: $bg; color: black; border: solid black; min-width: 10; height: 3; margin: 0 1 0 0; }
+Button:hover { background: $bg; color: black; border: solid black; }
+Button:focus { background: $bg; color: black; border: solid black; }
+Button:disabled { background: $bg; color: #888; border: solid #888; }
+
+/* Inputs */
+Input { background: $bg; color: black; border: solid black; margin: 0 1 0 0; }
+Input:focus { border: solid black; }
+
+/* Selects */
+Select { background: $bg; color: black; margin: 0 1 0 0; }
+SelectCurrent { background: $bg; color: black; }
+Select > SelectCurrent { border: tall black; }
+Select:focus > SelectCurrent { border: tall black; }
+SelectOverlay { background: $bg; color: black; border: solid black; }
+SelectOverlay > .option-list--option { color: black; background: $bg; }
+SelectOverlay > .option-list--option-highlighted { color: $bg; background: black; text-style: bold; }
+SelectOverlay > .option-list--option-hover { color: $bg; background: black; }
+SelectOverlay:focus > .option-list--option-highlighted { color: $bg; background: black; text-style: bold; }
+
+/* Checkbox */
+Checkbox { margin: 0 1 0 0; border: none; background: $bg; color: black; }
+Checkbox > .toggle--button { color: black; background: $bg; }
+Checkbox.-on > .toggle--button { color: black; background: $bg; text-style: bold; }
+Checkbox > .toggle--label { color: black; background: $bg; }
+Checkbox:focus { border: none; background: $bg; }
+Checkbox:focus > .toggle--label { color: $bg; background: black; text-style: bold; }
+Checkbox:focus > .toggle--button { color: black; background: $bg; }
+
+/* ListView */
+ListView { background: $bg; border: solid black; }
+ListView:focus { border: solid black; }
+ListItem { background: $bg; color: black; }
+ListItem:hover { background: $bg; color: black; }
+ListItem.--highlight { background: black; color: $bg; border: none; }
+
+/* TextArea */
+TextArea { background: $bg; color: black; border: solid black; }
+TextArea:focus { border: solid black; }
+
+/* RichLog */
+RichLog { background: $bg; color: black; border: solid black; }
+
+/* ScrollableContainer */
+ScrollableContainer { background: $bg; border: solid black; }
+
+/* Containers */
+Horizontal { border: none; background: $bg; }
+Vertical { border: none; background: $bg; }
+
+/* Status bar */
+#status-bar { height: 1; background: $bg; padding: 0 1; border: none; }
+#status-config { width: 1fr; }
+
+/* Console bar - captured stdout/stderr */
+#console-bar { height: 1; background: $bg; color: black; padding: 0 1; border: none; dock: bottom; }
+
+/* === LaunchPage === */
+LaunchPage { height: 1fr; background: $bg; }
+#launch-root { height: 1fr; }
+#config-panel { width: 60%; padding-right: 1; }
+#instances-panel { width: 40%; padding-left: 1; border-left: solid black; }
+#instances-panel > Label { height: auto; margin-bottom: 1; }
+#no-instances-label { height: auto; }
+#instances-container { height: 1fr; border: none; }
+#launch-selectors { height: 1fr; margin-bottom: 1; }
+.launch-col { width: 1fr; height: 1fr; padding: 1; margin: 0 1 0 0; border: solid black; background: $bg; }
+.launch-col:last-of-type { margin-right: 0; }
+.launch-col > Label { height: auto; }
+.launch-col > ListView { height: 1fr; }
+.launch-col > Input { height: auto; margin: 0; }
+.section-label { margin-top: 1; }
+#launch-buttons { height: auto; margin-top: 1; }
+#launch-buttons Button { width: 1fr; margin: 0 1 0 0; }
+#launch-buttons Button:last-of-type { margin-right: 0; }
+#bot-list { height: 1fr; }
+#api-list { height: 1fr; max-height: 8; }
+#model-list { height: 1fr; }
+#dmn-api-list { height: 1fr; max-height: 9; }
+#dmn-model-list { height: 1fr; }
+#config-summary { height: auto; margin-bottom: 1; }
+
+/* === BotInstanceCard === */
+BotInstanceCard { height: auto; padding: 1; margin-bottom: 1; border: solid black; background: $bg; }
+BotInstanceCard .card-header { height: auto; }
+BotInstanceCard .card-title { width: 1fr; }
+BotInstanceCard .card-status { width: auto; margin: 0 1; }
+BotInstanceCard .card-btn { min-width: 6; height: auto; margin: 0 0 0 1; }
+BotInstanceCard .card-log { height: 0; display: none; margin-top: 1; }
+BotInstanceCard.expanded .card-log { height: 12; display: block; }
+
+/* === LogsPage === */
+LogsPage { height: 1fr; background: $bg; }
+#log-controls { height: auto; margin-bottom: 1; }
+#log-search { width: 1fr; }
+#log-refresh-interval { width: 12; }
+#log-status-bar { height: auto; margin-bottom: 1; }
+#log-status { color: black; }
+#log-viewer { height: 1fr; background: black; color: white; border: solid black; }
+
+/* === PromptsPage === */
+PromptsPage { height: 1fr; background: $bg; }
+#prompt-root { height: 1fr; }
+.prompt-sidebar { width: 26; height: 1fr; padding: 1; margin-right: 1; border: solid black; background: $bg; }
+.prompt-sidebar Select { margin: 0 0 1 0; width: 100%; }
+.prompt-sidebar Button { margin: 0 0 1 0; width: 100%; }
+.prompt-sidebar Input { margin: 0 0 1 0; width: 100%; }
+.prompt-sidebar ListView { height: 1fr; margin: 0; }
+.prompt-main { width: 1fr; height: 1fr; background: $bg; }
+#prompt-editors { height: 1fr; }
+.editor-pane { width: 1fr; height: 1fr; padding: 0 1 0 0; background: $bg; }
+.editor-pane:last-of-type { padding-right: 0; }
+.editor-pane Label { height: auto; margin-bottom: 1; }
+.editor-pane TextArea { height: 1fr; }
+#validation-results { height: auto; max-height: 6; margin-top: 1; padding: 1; background: $bg; border: solid black; }
+
+/* === MemoryPage === */
+MemoryPage { height: 1fr; background: $bg; }
+#memory-controls { height: auto; margin-bottom: 1; }
+#memory-search { height: auto; margin-bottom: 1; }
+#find-replace-section { height: auto; margin-bottom: 1; padding: 1; background: $bg; border: solid black; }
+#fr-find { width: 16; }
+#fr-replace { width: 16; }
+#fr-status { width: auto; margin: 0; }
+#memory-stats { height: auto; margin-bottom: 1; }
+.memory-item { height: auto; padding: 1; margin-bottom: 1; border: solid black; background: $bg; }
+.memory-item Label { height: auto; }
+.memory-item Static { height: auto; margin: 1 0; }
+.memory-item Button { margin: 0; min-width: 8; }
+#mem-pagination { height: auto; align: center middle; padding: 1 0 0 0; }
+#mem-pagination Button { min-width: 5; margin: 0 1; }
+#mem-page-info { width: auto; content-align: center middle; }
+
+/* === VizPage === */
+VizPage { height: 1fr; background: $bg; }
+#viz-controls { height: auto; margin-bottom: 1; }
+#viz-controls Select { margin: 0 1 0 0; }
+#viz-controls Checkbox { margin: 0 1 0 0; }
+#viz-status { height: auto; margin-bottom: 1; }
+#viz-main { height: 1fr; }
+#viz-canvas { width: 65%; height: 1fr; border: solid black; background: $bg; overflow: hidden hidden; }
+#viz-content { height: 1fr; width: 1fr; padding: 0; overflow: hidden hidden; }
+#viz-canvas:focus { border: solid black; }
+#viz-detail-panel { width: 35%; height: 1fr; padding-left: 1; border-left: solid black; }
+#viz-detail-header { height: auto; margin-bottom: 1; }
+#viz-detail-scroll { height: 40%; border: solid black; margin-bottom: 1; }
+#viz-detail-content { height: auto; padding: 1; }
+#viz-conn-header { height: auto; margin-bottom: 1; }
+#viz-conn-scroll { height: 1fr; border: solid black; }
+#viz-connections { height: auto; padding: 1; }
+.viz-conn-item { height: auto; padding: 1; margin-bottom: 1; border: solid black; background: $bg; }
+.viz-conn-item Label { height: auto; }
+.viz-conn-item Static { height: auto; margin-top: 1; }
+
+/* === ConfigPage === */
+ConfigPage { height: 1fr; background: $bg; }
+#cfg-root { height: 1fr; }
+.cfg-sidebar { width: 26; height: 1fr; padding: 1; margin-right: 1; border: solid black; background: $bg; }
+.cfg-sidebar Select { width: 100%; margin-bottom: 1; }
+.cfg-sidebar Button { width: 100%; margin-bottom: 1; }
+.cfg-bot-status { height: auto; margin-bottom: 1; }
+.cfg-hint { height: auto; color: $text-muted; }
+.cfg-main { width: 1fr; height: 1fr; background: $bg; }
+#cfg-tabs { height: 1fr; }
+.cfg-actions { height: auto; margin-top: 1; align: left middle; }
+.cfg-actions Button { margin-right: 1; }
+.cfg-actions Label { width: auto; content-align: left middle; }
+.cfg-field-row { height: auto; padding: 0 0 1 0; align: left middle; }
+.cfg-overridden { background: $boost; }
+.cfg-field-label { width: 40%; height: auto; content-align: left middle; }
+.cfg-field-control { width: 30%; height: auto; }
+.cfg-field-control.cfg-field-switch { width: auto; margin-left: 1; }

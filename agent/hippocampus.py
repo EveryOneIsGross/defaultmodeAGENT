@@ -7,6 +7,8 @@ from api_client import get_embeddings
 import asyncio
 from chunker import truncate_middle
 from bot_config import HippocampusConfig, EmbeddingConfig
+from tools.chronpression import chronomic_filter
+from tokenizer import count_tokens
 
 
 class Hippocampus:
@@ -16,11 +18,69 @@ class Hippocampus:
         self.embedding_config = EmbeddingConfig()
         self.logger = logger or logging.getLogger("bot.default")
 
+    def _smart_compress_memory(self, text: str, max_tokens: int) -> str:
+        """
+        Intelligently compress memory text using chronpression before truncation.
+
+        Strategy:
+        1. Check if text exceeds token limit
+        2. If yes, apply chronomic compression with adaptive ratio
+        3. If still too long, fall back to truncate_middle
+
+        Args:
+            text: Memory text to compress
+            max_tokens: Maximum allowed tokens
+
+        Returns:
+            Compressed text that fits within max_tokens
+        """
+        current_tokens = count_tokens(text)
+
+        # If already within limit, return as-is
+        if current_tokens <= max_tokens:
+            return text
+
+        # Calculate how much we need to compress
+        # Add 10% safety margin to account for compression variance
+        target_ratio = (max_tokens * 0.9) / current_tokens
+
+        # Use chronpression for intelligent compression
+        # compression parameter is how much to REMOVE (0.5 = remove 50%)
+        compression_ratio = max(0.3, min(0.85, 1.0 - target_ratio))
+
+        try:
+            compressed = chronomic_filter(
+                text,
+                compression=compression_ratio,
+                fuzzy_strength=1.0
+            )
+
+            # Verify it's actually shorter
+            compressed_tokens = count_tokens(compressed)
+
+            if compressed_tokens <= max_tokens:
+                self.logger.debug(
+                    f"Chronpression: {current_tokens} → {compressed_tokens} tokens "
+                    f"(ratio: {compression_ratio:.2f})"
+                )
+                return compressed
+            else:
+                # Still too long, use truncate_middle as fallback
+                self.logger.debug(
+                    f"Chronpression insufficient ({compressed_tokens} > {max_tokens}), "
+                    f"falling back to truncate_middle"
+                )
+                return truncate_middle(compressed, max_tokens=max_tokens)
+
+        except Exception as e:
+            self.logger.warning(f"Chronpression failed: {e}, using truncate_middle")
+            return truncate_middle(text, max_tokens=max_tokens)
+
     async def _get_ollama_embedding(self, text: str) -> Optional[np.ndarray]:
         """Get embeddings specifically from Ollama API."""
-        # Truncate text to fit model's context window with safety margin
+        # Compress text to fit model's context window with safety margin
         max_tokens = getattr(self.embedding_config, "max_embed_tokens", 160)
-        truncated_text = truncate_middle(text, max_tokens=max_tokens)
+        compressed_text = self._smart_compress_memory(text, max_tokens=max_tokens)
 
         async with aiohttp.ClientSession() as session:
             try:
@@ -28,8 +88,7 @@ class Hippocampus:
                     f"{self.embedding_config.api_base}/api/embeddings",
                     json={
                         "model": self.embedding_config.model,
-                        "prompt": truncated_text,
-                        "options": {"temperature": 0.0, "num_ctx": 256},
+                        "prompt": compressed_text
                     },
                 ) as response:
                     if response.status != 200:
@@ -78,21 +137,20 @@ class Hippocampus:
 
     async def _get_ollama_embeddings_batch(self, texts: List[str]) -> Optional[np.ndarray]:
         """Get embeddings for multiple texts in a single batch from Ollama API."""
-        # Truncate texts to fit model's context window with safety margin
+        # Compress texts to fit model's context window with safety margin
         max_tokens = getattr(self.embedding_config, "max_embed_tokens", 160)
-        truncated_texts = [truncate_middle(text, max_tokens=max_tokens) for text in texts]
+        compressed_texts = [self._smart_compress_memory(text, max_tokens=max_tokens) for text in texts]
 
         async with aiohttp.ClientSession() as session:
             try:
                 tasks = []
-                for text in truncated_texts:
+                for text in compressed_texts:
                     tasks.append(
                         session.post(
                             f"{self.embedding_config.api_base}/api/embeddings",
                             json={
                                 "model": self.embedding_config.model,
-                                "prompt": text,
-                                "options": {"temperature": 0.0, "num_ctx": 256},
+                                "prompt": text
                             },
                         )
                     )
@@ -171,19 +229,23 @@ class Hippocampus:
             f"Using blend factor: {blend:.2f} (initial:{blend:.2f}/embedding:{1 - blend:.2f})"
         )
 
-        # Truncate memories to fit embedding model token limits with safety margin
-        max_tokens = getattr(self.embedding_config, "max_embed_tokens", 160)
-        memory_texts = [truncate_middle(str(m[0]), max_tokens=max_tokens) for m in memories]
+        # Keep original memories for returning to agent
+        original_memories = [str(m[0]) for m in memories]
         initial_scores = np.array([m[1] for m in memories])
 
-        # Truncate query to fit embedding model token limits with safety margin
-        truncated_query = truncate_middle(query, max_tokens=max_tokens)
-        query_embedding = await self._get_embedding(truncated_query)
+        # Compress memories ONLY for embedding generation
+        max_tokens = getattr(self.embedding_config, "max_embed_tokens", 160)
+        compressed_for_embedding = [self._smart_compress_memory(text, max_tokens=max_tokens) for text in original_memories]
+
+        # Compress query ONLY for embedding generation
+        compressed_query = self._smart_compress_memory(query, max_tokens=max_tokens)
+        query_embedding = await self._get_embedding(compressed_query)
         if query_embedding is None:
             self.logger.error("Failed to generate query embedding")
             return []
 
-        memory_embeddings = await self._get_embeddings_batch(memory_texts)
+        # Generate embeddings from compressed versions
+        memory_embeddings = await self._get_embeddings_batch(compressed_for_embedding)
         cosine = np.dot(memory_embeddings, query_embedding)
         embedding_similarities = 0.5 * (cosine + 1.0)
         initial_scores = np.clip(initial_scores, 0.0, 1.0)
@@ -191,7 +253,10 @@ class Hippocampus:
             (blend * initial_scores) + ((1 - blend) * embedding_similarities), 0.0, 1.0
         )
 
-        reranked = [(t, float(s)) for t, s in zip(memory_texts, combined_scores) if s >= threshold]
+        # Return ORIGINAL uncompressed memories with their reranked scores
+        reranked = [(original_memories[i], float(combined_scores[i]))
+                    for i in range(len(original_memories))
+                    if combined_scores[i] >= threshold]
         reranked.sort(key=lambda x: x[1], reverse=True)
 
         self.logger.info(

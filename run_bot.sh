@@ -80,6 +80,17 @@ handle_api() {
     local bot_name="$2"
     clear_screen
     echo "Selected: $api_name"
+
+    # Show available models for OpenAI
+    if [ "$api_name" == "openai" ]; then
+        echo ""
+        echo "Available OpenAI Models:"
+        echo "----------------------"
+        python -c "from dotenv import load_dotenv; import openai, os; load_dotenv(); client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY')); models = client.models.list(); [print(m.id) for m in sorted(models.data, key=lambda x: x.id) if any(x in m.id for x in ['gpt', 'o1', 'o3'])]" 2>/dev/null || echo "(OPENAI_API_KEY not set - cannot fetch models)"
+        echo "----------------------"
+        echo ""
+    fi
+
     read -p "Enter model name (or press Enter for default): " model
     
     # Ask for DMN settings

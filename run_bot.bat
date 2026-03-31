@@ -56,6 +56,12 @@ if "!choice!"=="1" (
 if "!choice!"=="2" (
     cls
     echo Selected: OpenAI
+    echo.
+    echo Available OpenAI Models:
+    echo ----------------------
+    python -c "from dotenv import load_dotenv; import openai, os; load_dotenv(); client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY')); models = client.models.list(); [print(m.id) for m in sorted(models.data, key=lambda x: x.id) if any(x in m.id for x in ['gpt', 'o1', 'o3'])]" 2>nul || echo OPENAI_API_KEY not set - cannot fetch models
+    echo ----------------------
+    echo.
     set /p model="Enter model name (or press Enter for default): "
     echo.
     echo DMN Background Thought Generation Settings:

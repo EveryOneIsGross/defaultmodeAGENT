@@ -1,14 +1,15 @@
-aiohttp==3.12.14
+aiohttp==3.13.3
 anthropic==0.45.2
 colorama==0.4.6
 discord.py==2.4.0
-fastapi==0.115.8
+fastapi==0.128.0
 fuzzywuzzy==0.18.0
+python-Levenshtein
 numpy==2.2.2
 ollama==0.4.7
 openai==1.61.1
 opencv_python==4.10.0.84
-Pillow==11.1.0
+Pillow==12.1.1
 pydantic==2.10.6
 PyGithub==2.5.0
 pytest==8.3.4
@@ -18,8 +19,20 @@ tiktoken==0.8.0
 uvicorn==0.34.0
 click==8.1.7
 beautifulsoup4==4.12.3
-yt-dlp==2025.5.22
+yt-dlp==2026.02.21
 google-genai==1.21.1
+# google introduced security flaw, fixed with this version of urllib3
+urllib3==2.6
+# pinned explicitly to enforce safe minimums for transitive deps
+starlette>=0.47.2
+PyNaCl>=1.6.2
+pyasn1>=0.6.2
+cryptography>=46.0.5
 
-# optional for ./utils/visualise_pickles.py
+# TUI launcher
+textual==3.0.0
+rich==14.0.0
+
+# optional for ./utils/visualise_pickles.py and TUI viz tab
 umap-learn==0.5.4
+scikit-learn==1.6.1

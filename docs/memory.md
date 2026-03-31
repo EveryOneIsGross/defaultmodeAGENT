@@ -127,3 +127,89 @@ cache/
 
 - Python 3.7+
 - Custom tokenizer implementation
+
+---
+
+● The Memory Graph, High Level                                                                                           
+        The underlying data structure is an inverted index: term → [memory_id, memory_id, ...]. There is no explicit graph       object — the graph is implicit. Two memories are "connected" if they share at least one term entry. Terms are the    edges.                                                                                                                                                                                                                                          
+  ---
+  The Pruning + Generation Cycle
+
+  Each DMN tick runs a four-phase process on a randomly selected seed memory:
+
+  1. Neighborhood discovery
+  Search the inverted index for memories sharing terms with the seed. The result is the seed's local neighborhood — its  
+  connected subgraph. If the neighborhood is empty, that's an orphan → spike path.
+
+  2. Term pruning (edge removal)
+  For each high-similarity neighbor, the DMN computes:
+  overlapping_terms = seed_terms ∩ neighbor_terms
+  Those shared terms are removed from the neighbor's index entries — not from the seed. The seed keeps them. The neighbor
+   loses the shared vocabulary.
+
+  This is the core specialization pressure: every DMN cycle, neighbors are pushed away from the seed conceptually. Their 
+  remaining terms become more distinctive. If a neighbor loses all its terms this way across enough cycles, it becomes a 
+  disconnected node and gets cleaned up.
+
+  Weight decay compounds this — the more terms a memory loses relative to its original term count, the lower its
+  selection weight. It becomes progressively less likely to be picked as a future seed.
+
+  3. Generative reflection (new node synthesis)
+  The LLM is given the seed + neighborhood and generates a new thought. This reflection is stored as a new memory node   
+  and indexed into the inverted index with its own fresh terms.
+
+  This new node is the bridge. It uses language that synthesizes concepts from the neighborhood, so it naturally picks up
+   terms from multiple sources. It may immediately connect to clusters that were previously isolated from each other,    
+  just by virtue of containing their vocabulary.
+
+  4. Cleanup (dead node removal)
+  After generation, any memory with zero inverted index entries is permanently deleted. The graph compacts.
+
+  ---
+  The Emergent Graph Behavior
+
+  The system never explicitly manages a graph — but one emerges:
+
+  Dense cluster of similar memories
+    → repeated DMN cycles prune shared terms between them
+    → memories specialize: each retains only distinctive vocabulary
+    → weakest ones lose all terms → die
+    → new reflection nodes synthesize the cluster into higher-level concepts
+    → those reflections may bridge to distant clusters via shared vocabulary
+
+  Over time the graph evolves from a flat collection of raw interaction memories toward a sparser, more abstract
+  structure dominated by synthetic reflection nodes. The raw memories that survive are the ones with enough distinctive, 
+  non-overlapping vocabulary to resist pruning.
+
+  The density-based temperature feeds into this directly: a sparse neighborhood (few related memories) → high amygdala   
+  intensity → hotter, more speculative generation → new reflection nodes with less predictable vocabulary → potentially  
+  bridging to very distant parts of the graph.
+
+  Spike fits into this as the boundary condition: orphan nodes (functionally isolated — too few shared terms to find     
+  neighbors above threshold) get thrown at real conversation. If the spike fires, two new nodes are created — the spike  
+  interaction memory and its reflection — both of which may re-enter the graph with terms that reconnect the orphan's    
+  concepts. The orphan's own weight has been decayed, so even if it survives, it competes poorly for future selection.   
+
+  ---
+  What "Emergent" Means Here
+
+  No single cycle is directed. But across many cycles the pressures compose:
+
+  ┌──────────────────────┬───────────────────────────────────────────────────┐
+  │       Pressure       │                      Effect                       │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Term pruning         │ Memories specialize, cluster edges thin           │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Weight decay         │ Low-connectivity memories deprioritized           │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Generative synthesis │ New abstract nodes bridge distant clusters        │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Cleanup              │ True dead nodes removed, graph stays compact      │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Spike                │ Isolated nodes tested against live context        │
+  ├──────────────────────┼───────────────────────────────────────────────────┤
+  │ Density temperature  │ Sparse graphs → creative generation → new bridges │
+  └──────────────────────┴───────────────────────────────────────────────────┘
+
+  The graph is continuously rewiring itself — not toward any fixed structure, but toward whatever clustering pattern     
+  emerges from the intersection of conversation content, random seed walks, and LLM synthesis.

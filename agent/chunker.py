@@ -52,10 +52,6 @@ def truncate_middle(text, max_tokens=64):
             for start, end in code_blocks:
                 block_text = '\n'.join(lines[start:end+1])
                 block_tokens.extend(encode_text(block_text))
-            
-            if len(block_tokens) <= max_tokens:
-                # If code blocks fit within limit, preserve them entirely
-                return text
         
         ellipsis_token = encode_text('...')
         truncated_tokens = tokens[:side_tokens] + ellipsis_token + tokens[-end_tokens:]

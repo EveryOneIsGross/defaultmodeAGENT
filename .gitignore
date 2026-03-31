@@ -3,13 +3,16 @@
 
 # temporary files
 *.tmp
+.ruff_cache/
 
 # API call logs
 
 *.jsonl
 *.db
 
-CLAUDE.md
+# virtual environment folders
+.venv/
+
 # cache folder and archive folders
 cache/
 archive/
@@ -17,13 +20,21 @@ prompt_archive/
 temp_files/
 scratch/
 tests/
+todo/
 
-# all pycache folders
+# python cache folders
 __pycache__/
+.pytest_cache/
 
-# llm rules
+# llm rules and trash
 .cursor
 CLAUDE.md
 scratch_thoughts.md
+notes.md
+.claude/
 
-
+# certain agent prompts
+/agent/prompts/delphi/
+/agent/prompts/grossBOT/
+/agent/prompts/tars/
+/agent/prompts/CASFY/
