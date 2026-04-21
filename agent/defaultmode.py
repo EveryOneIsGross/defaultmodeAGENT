@@ -7,6 +7,10 @@ import re
 from chunker import truncate_middle, clean_response
 from temporality import TemporalParser
 from fuzzywuzzy import fuzz
+try:
+    from tools.chronpression import chronomic_filter as _chronomic_filter
+except ImportError:
+    _chronomic_filter = None
 
 class DMNProcessor:
     """
@@ -35,7 +39,6 @@ class DMNProcessor:
         self.combination_threshold = dmn_config.combination_threshold
         # Memory decay settings
         self.decay_rate = dmn_config.decay_rate
-        self.memory_weights = defaultdict(lambda: defaultdict(lambda: 1.0))  # user_id -> memory -> weight
         self.top_k = dmn_config.top_k
         # Retrived Memory Density Temperature Multiplier settings
         self.density_multiplier = dmn_config.density_multiplier
@@ -45,6 +48,9 @@ class DMNProcessor:
         # Memory context compression settings
         self.max_memory_length = dmn_config.max_memory_length
         self.temporal_parser = TemporalParser()  # Add temporal parser instance
+        # Chronomic distillation settings
+        self.use_chronpression = dmn_config.use_chronpression
+        self.chron_compression_max = dmn_config.chron_compression_max
         # Search similarity settings
         self.similarity_threshold = dmn_config.similarity_threshold
         # Store modes from config
@@ -137,10 +143,14 @@ class DMNProcessor:
         user_memories = self.memory_index.user_memories[selected_user_id]
         if not user_memories:
             return None
-        # Use user-specific weights
+        # Derive weights from TF totals in the inverted index (sum of posting list appearances per mid)
+        tf_totals = defaultdict(int)
+        for pl in self.memory_index.inverted_index.values():
+            for mid in pl:
+                tf_totals[mid] += 1
         weighted_memories = [
-            (self.memory_index.memories[memory_id], 
-             self.memory_weights[selected_user_id][self.memory_index.memories[memory_id]])
+            (self.memory_index.memories[memory_id],
+             max(1, tf_totals.get(memory_id, 1)))
             for memory_id in user_memories
             if self.memory_index.memories[memory_id] is not None
         ]
@@ -207,9 +217,6 @@ class DMNProcessor:
                 self._cleanup_disconnected_memories()
                 return
             self.logger.info(f"dmn.orphan detected—delegating to spike")
-            # Apply flat weight decay so this orphan is less likely to dominate future selection
-            self.memory_weights[user_id][seed_memory] *= (1 - self.decay_rate)
-            self.logger.info(f"dmn.orphan weight decayed by {self.decay_rate:.2f} → {self.memory_weights[user_id][seed_memory]:.4f}")
             if hasattr(self.bot, 'spike_processor') and self.bot.spike_processor:
                 from spike import handle_orphaned_memory
                 fired = await handle_orphaned_memory(self.bot.spike_processor, seed_memory)
@@ -382,21 +389,27 @@ class DMNProcessor:
         memory_context = "\n\n".join([truncate_middle(memory, self.max_memory_length) for memory in memory_context.split("\n\n")])
 
         try:
-            # Use call_api with override parameters without changing global state
-            api_kwargs = {
-                'prompt': prompt,
-                'system_prompt': system_prompt,
-                'temperature': self.temperature
-            }
-            
-            # Only add overrides if they're actually set
-            if self.dmn_api_type:
-                api_kwargs['api_type_override'] = self.dmn_api_type
-            if self.dmn_model:
-                api_kwargs['model_override'] = self.dmn_model
-            
-            new_thought = await self.bot.call_api(**api_kwargs)
-            new_thought = clean_response(new_thought)
+            if self.use_chronpression and _chronomic_filter is not None:
+                chron_compression = 0.5 + intensity_norm * (self.chron_compression_max - 0.5)
+                raw_texts = seed_memory + "\n\n" + "\n\n".join(m for m, _ in related_memories)
+                new_thought = _chronomic_filter(raw_texts, compression=chron_compression).strip()
+                self.logger.info(f"dmn.chronpression amygdala={new_intensity} compression={chron_compression:.3f} [{len(raw_texts)}→{len(new_thought)}ch] >> {new_thought}")
+            else:
+                # Use call_api with override parameters without changing global state
+                api_kwargs = {
+                    'prompt': prompt,
+                    'system_prompt': system_prompt,
+                    'temperature': self.temperature
+                }
+
+                # Only add overrides if they're actually set
+                if self.dmn_api_type:
+                    api_kwargs['api_type_override'] = self.dmn_api_type
+                if self.dmn_model:
+                    api_kwargs['model_override'] = self.dmn_model
+
+                new_thought = await self.bot.call_api(**api_kwargs)
+                new_thought = clean_response(new_thought)
             
             # Gather unique users from related memories
             memory_users = set()
@@ -416,10 +429,30 @@ class DMNProcessor:
             users_str = f" and {', '.join(memory_users)}" if memory_users else ""
             # Clean username - remove all possible leading Discord role markers
             clean_name = re.sub(r'^[.!~*$]', '', user_name).strip()
-            thought_memory = f"Reflections on priors with @{clean_name}{users_str} {timestamp}:\n{new_thought}"
+            label = "Distillation" if self.use_chronpression else "Reflections"
+            thought_memory = f"{label} on priors with @{clean_name}{users_str} {timestamp}:\n{new_thought}"
             # Store memory without metadata
             await self.memory_index.add_memory_async(user_id, thought_memory)
 
+            # Decay seed TF: remove one posting entry per term so weight decrements naturally.
+            # Bound by actual term count — hits zero only when all entries are gone,
+            # at which point _cleanup_disconnected_memories removes the memory entirely.
+            seed_mid = next(
+                (i for i, m in enumerate(self.memory_index.memories) if m == seed_memory), None
+            )
+            if seed_mid is not None:
+                with self.memory_index._mut:
+                    for term in list(self.memory_index.inverted_index.keys()):
+                        pl = self.memory_index.inverted_index[term]
+                        if seed_mid in pl:
+                            new_pl = list(pl)
+                            new_pl.remove(seed_mid)  # removes one occurrence (TF -= 1)
+                            if new_pl:
+                                self.memory_index.inverted_index[term] = new_pl
+                            else:
+                                del self.memory_index.inverted_index[term]
+                self.memory_index._saver.request()
+                self.logger.info(f"dmn.seed_decay mid={seed_mid} tf decremented")
 
             # Process memory weights and cleanup if we have memory state
             if 'memory_update_state' in locals():
@@ -446,15 +479,7 @@ class DMNProcessor:
                                         del self.memory_index.inverted_index[term]
                                         self.logger.info(f"Removed empty term entry: {term}")
 
-                # Then update weights
-                for memory, memory_id in state['top_memories'][1:]:  # Skip seed memory
-                    original_terms = state['memory_terms_map'][memory_id]
-                    removed_terms = len(original_terms & state['overlapping_terms'])
-                    if len(original_terms) > 0:
-                        decay = removed_terms / len(original_terms)
-                        # Use user-specific weight decay
-                        self.memory_weights[user_id][memory] *= (1 - (self.decay_rate * decay))
-                        #self.logger.info(f"Memory weight updated for user {user_id}: {memory[:50]}... (decay: {decay:.2f})")
+                # Term removal above already decrements TF for related memories — no separate weight update needed
                 #self.memory_index.save_cache()
                 self.memory_index._saver.request()
                 self.logger.info(f"Updated memory cache after pruning {len(affected_memories)} memories")
@@ -519,8 +544,6 @@ class DMNProcessor:
                         self.memory_index.inverted_index[w]=nl
                     else:
                         self.memory_index.inverted_index.pop(w,None)
-                for u,weights in list(self.memory_weights.items()):
-                    self.memory_weights[u]={remap(k):v for k,v in weights.items() if k not in removed}
                 self.logger.info(f"Cleaned up {len(disc)} disconnected memories for user {uid}")
                 self.logger.info(f"Disconnected memories: {texts}")
                 self.logger.log({'event':'dmn_memory_cleanup','timestamp':datetime.now().isoformat(),'user_id':uid,'disconnected_memories':texts})

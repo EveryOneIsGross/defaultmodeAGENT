@@ -130,6 +130,10 @@ class DMNConfig(BaseModel):
     # DMN-specific API settings
     dmn_api_type: str = Field(default=None, description="API type for DMN processor (ollama, openai, anthropic, etc.)")
     dmn_model: str = Field(default=None, description="Model name for DMN processor")
+
+    # Chronomic distillation mode (replaces LLM call with chronomic_filter)
+    use_chronpression: bool = Field(default=False, description="Use chronomic compression instead of LLM for DMN thought distillation")
+    chron_compression_max: float = Field(default=0.99, description="Maximum compression ratio for chronomic distillation at full amygdala arousal (0.0-1.0)")
     
     # Memory presets
     modes: Dict[str, Dict[str, float]] = Field(default_factory=lambda: {

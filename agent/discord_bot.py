@@ -1833,6 +1833,8 @@ if __name__ == "__main__":
                         help='Choose the API to use for DMN processor (default: use main API)')
     parser.add_argument('--dmn-model', type=str,
                         help='Specify the model to use for DMN processor (default: use main model)')
+    parser.add_argument('--use-chronpression', action='store_true',
+                        help='Use chronomic compression instead of LLM for DMN thought distillation')
 
     args = parser.parse_args()
     # Initialize global logger
@@ -1861,6 +1863,8 @@ if __name__ == "__main__":
     # Create private API client for this bot
     private_api = load_private_api_client(args.bot_name or "default", args)
     # Override DMN config with command line arguments if provided
+    if args.use_chronpression:
+        config.dmn.use_chronpression = True
     if args.dmn_api or args.dmn_model:
         config.dmn.dmn_api_type = args.dmn_api or config.dmn.dmn_api_type
         config.dmn.dmn_model = args.dmn_model or config.dmn.dmn_model
