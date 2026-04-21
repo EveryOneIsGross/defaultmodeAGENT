@@ -28,11 +28,14 @@ starlette>=0.47.2
 PyNaCl>=1.6.2
 pyasn1>=0.6.2
 cryptography>=46.0.5
+PyJWT>=2.12.0
+requests>=2.33.0
 
 # TUI launcher
 textual==3.0.0
 rich==14.0.0
 
 # optional for ./utils/visualise_pickles.py and TUI viz tab
-umap-learn==0.5.4
+umap-learn>=0.5.6
 scikit-learn==1.6.1
+scipy>=1.13

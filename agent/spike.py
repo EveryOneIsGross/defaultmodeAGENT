@@ -475,7 +475,15 @@ class SpikeProcessor:
                     temperature=temperature
                 )
             response = clean_response(response)
-            if not response or response.strip().lower() in ('', 'none', 'pass', '[silence]'):
+            timestamp_label = prompt_state.timestamp
+
+            # Detect [SILENCE] choice — agent opts out of sending but still reflects
+            chose_silence = (
+                not response
+                or response.strip().lower() in ('', 'none', 'pass')
+                or response.strip().upper().startswith('[SILENCE]')
+            )
+            if chose_silence:
                 self.logger.info("spike.silence chosen")
                 self.logger.log({
                     'event': 'spike_silence',
@@ -485,11 +493,18 @@ class SpikeProcessor:
                     'score': event.target.score,
                     'raw_response': response,
                 })
+                # Still reflect so the silence itself becomes a memory
+                memory_text = f"spike considered {location} ({timestamp_label}):\norphan: {event.orphaned_memory[:200]}\n[chose silence]"
+                await self.memory_index.add_memory_async(str(self.bot.user.id), memory_text)
+                asyncio.create_task(self._reflect_on_spike(
+                    memory_text=memory_text,
+                    location=location,
+                    conversation_context=simple_ctx
+                ))
                 return None
             formatted = format_discord_mentions(response, getattr(channel, 'guild', None), self.bot.mentions_enabled, self.bot)
             await self._send_chunked(channel, formatted)
             self.log_engagement(channel.id)
-            timestamp_label = prompt_state.timestamp
             memory_text = f"spike reached {location} ({timestamp_label}):\norphan: {event.orphaned_memory[:200]}\nresponse: {response}"
             await self.memory_index.add_memory_async(str(self.bot.user.id), memory_text)
             # Fire reflection as background task (mirrors generate_and_save_thought in process_message)

@@ -17,9 +17,16 @@ from logger import logging
 MAX_TOKENS=config.search.max_tokens
 CONTEXT_CHUNKS=config.search.context_chunks
 
+# ── learned-stopword knobs ───────────────────────────────────────────────────
+_RELEARN_EVERY          = 50    # relearn after this many inserts
+_GLOBAL_STOP_THRESHOLD  = 0.70  # word in ≥70 % of ALL memories → global stop
+_USER_STOP_THRESHOLD    = 0.80  # word in ≥80 % of a user's memories → user stop
+_MIN_GLOBAL_MEMORIES    = 20    # corpus must be at least this large to learn
+_MIN_USER_MEMORIES      = 15    # per-user corpus floor
+
 class AtomicSaver:
-    def __init__(self,path,get_state,debounce=0.3,logger=None):
-        self.path=path; self.get_state=get_state; self.ev=threading.Event(); self.debounce=debounce; self.logger=logger
+    def __init__(self,path,get_state,debounce=0.3,logger=None,on_save=None):
+        self.path=path; self.get_state=get_state; self.ev=threading.Event(); self.debounce=debounce; self.logger=logger; self.on_save=on_save
         threading.Thread(target=self._run,name="mem.save",daemon=True).start()
     def request(self):
         if self.logger: self.logger.info("mem.save.req")
@@ -34,6 +41,9 @@ class AtomicSaver:
             try: dfd=os.open(os.path.dirname(self.path),os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
             except: pass
             if self.logger: self.logger.info(f"mem.save.ok path={self.path} bytes={sz}")
+            if self.on_save:
+                try: self.on_save(self.path)
+                except Exception: pass
         except Exception as e:
             if self.logger: self.logger.error(f"mem.save.err path={self.path} msg={e!r}")
     def _run(self):
@@ -137,9 +147,13 @@ class UserMemoryIndex:
         self.tokenizer=get_tokenizer()
         self.inverted_index=defaultdict(list); self.memories=[]; self.user_memories=defaultdict(list)
         self.stopwords=set(['the','a','an','and','or','but','nor','yet','so','in','on','at','to','for','of','with','by','from','up','about','i','you','he','she','it','we','they','me','him','her','us','them','is','are','was','were','be','been','have','has','had','can','could','may','might','must','shall','should','will','would','this','that','these','those'])
+        self._global_stops: set = set()
+        self._user_stops:  dict = {}   # user_id → set[str]
+        self._inserts_since_relearn: int = 0
         self.logger=logger or logging.getLogger('bot.default')
         self._mut=threading.RLock()
-        self._saver=AtomicSaver(os.path.join(self.cache_dir,'memory_cache.pkl'),self._snapshot,debounce=0.3,logger=self.logger)
+        self._cache_mtime=0.0
+        self._saver=AtomicSaver(os.path.join(self.cache_dir,'memory_cache.pkl'),self._snapshot,debounce=0.3,logger=self.logger,on_save=self._on_save_complete)
         self.load_cache()
     def _snapshot(self):
         with self._mut:
@@ -152,15 +166,71 @@ class UserMemoryIndex:
         text=text.replace("<|endoftext|>","").replace("<|im_start|>","").replace("<|im_end|>","").lower()
         text=text.translate(str.maketrans(string.punctuation,' '*len(string.punctuation)))
         text=re.sub(r'\d+','',text)
-        words=[w for w in text.split() if w and w not in self.stopwords]
+        words=[w for w in text.split() if w and w not in self.stopwords and w not in self._global_stops]
         return ' '.join(words)
     def _safe_ct(self,t):
         try: return _ct(t)
         except: return len(t.split()) if isinstance(t,str) else 0
+    def _on_save_complete(self,path):
+        try: self._cache_mtime=os.path.getmtime(path)
+        except OSError: pass
+
+    def _relearn_stops(self, user_id=None):
+        """Derive stopwords from the current index DF distributions.
+
+        Global stops: words present in ≥_GLOBAL_STOP_THRESHOLD of all memories.
+        User stops:   words present in ≥_USER_STOP_THRESHOLD of a specific
+                      user's memories (or all users when user_id is None).
+        Both are transient — never persisted; recomputed from the index on load.
+        Must be called with self._mut held.
+        """
+        total = sum(1 for m in self.memories if m is not None)
+        if total >= _MIN_GLOBAL_MEMORIES:
+            cutoff = total * _GLOBAL_STOP_THRESHOLD
+            self._global_stops = {
+                w for w, ids in self.inverted_index.items()
+                if len(ids) >= cutoff
+            }
+
+        targets = [user_id] if user_id else list(self.user_memories.keys())
+        for uid in targets:
+            umids  = self.user_memories.get(uid, [])
+            u_total = len(umids)
+            if u_total < _MIN_USER_MEMORIES:
+                self._user_stops.pop(uid, None)
+                continue
+            uid_set  = set(umids)
+            cutoff_u = u_total * _USER_STOP_THRESHOLD
+            self._user_stops[uid] = {
+                w for w, ids in self.inverted_index.items()
+                if len(set(ids) & uid_set) >= cutoff_u
+            }
+
+    def _check_and_reload(self):
+        """Reload from disk if another process has updated the cache. Must be called with self._mut held."""
+        cf=os.path.join(self.cache_dir,'memory_cache.pkl')
+        try: mtime=os.path.getmtime(cf)
+        except OSError: return
+        if mtime<=self._cache_mtime: return
+        try:
+            with open(cf,'rb') as f: d=pickle.load(f)
+            self.inverted_index=defaultdict(list,d.get('inverted_index',{}))
+            self.memories=d.get('memories',[])
+            self.user_memories=defaultdict(list,d.get('user_memories',{}))
+            self._cache_mtime=mtime
+            self.logger.info(f"mem.reload.ok mtime={mtime}")
+        except Exception as e:
+            self.logger.warning(f"mem.reload.err: {e}")
+
     def add_memory(self,user_id,memory_text):
         with self._mut:
+            self._check_and_reload()
             mid=len(self.memories); self.memories.append(memory_text); self.user_memories[user_id].append(mid)
             for w in self.clean_text(memory_text).split(): self.inverted_index[w].append(mid)
+            self._inserts_since_relearn+=1
+            if self._inserts_since_relearn>=_RELEARN_EVERY:
+                self._relearn_stops(user_id=user_id)
+                self._inserts_since_relearn=0
         self.logger.info(f"mem.add user={user_id} mid={mid}")
         self._saver.request()
     async def add_memory_async(self,user_id,memory_text):
@@ -178,6 +248,7 @@ class UserMemoryIndex:
             remapped=[remap[mid] for mid in pl if mid in remap]
             if remapped: new_idx[w]=remapped
         self.inverted_index=new_idx
+        self._relearn_stops()
     def clear_user_memories(self,user_id):
         with self._mut:
             if user_id not in self.user_memories: return
@@ -188,8 +259,11 @@ class UserMemoryIndex:
         self.logger.info(f"mem.clear user={user_id} removed={ct}")
         self._saver.request()
     def search(self,query,k=5,user_id=None,dedup_threshold=0.95):
-        cq=self.clean_text(query); qws=cq.split()
+        cq=self.clean_text(query)
+        user_stops=self._user_stops.get(user_id,set()) if user_id else set()
+        qws=[w for w in cq.split() if w not in user_stops]
         with self._mut:
+            self._check_and_reload()
             scores=Counter(); total=len([m for m in self.memories if m is not None])
             rel=self.user_memories.get(user_id,[]) if user_id else range(len(self.memories))
             k1=1.2; b=0.75; dlen={}; tl=0; vc=0
@@ -244,6 +318,8 @@ class UserMemoryIndex:
         cf=os.path.join(self.cache_dir,'memory_cache.pkl')
         if os.path.exists(cf):
             with open(cf,'rb') as f: d=pickle.load(f)
+            try: self._cache_mtime=os.path.getmtime(cf)
+            except OSError: pass
             with self._mut:
                 self.inverted_index=defaultdict(list,d.get('inverted_index',{}))
                 self.memories=d.get('memories',[])
@@ -254,10 +330,12 @@ class UserMemoryIndex:
                     if orph: self.logger.warning(f"orphans={len(orph)}")
                 has_nulls=any(m is None for m in self.memories)
                 if has_nulls and cleanup_nulls:
-                    self._compact()
+                    self._compact()   # _compact calls _relearn_stops internally
                     self.logger.info("mem.compact nulls.removed"); self.save_cache()
+                else:
+                    self._relearn_stops()
                 tot=len(self.memories); act=len([m for m in self.memories if m is not None])
-                self.logger.info(f"mem.load totals={tot} active={act} users={len(self.user_memories)} vocab={len(self.inverted_index)}")
+                self.logger.info(f"mem.load totals={tot} active={act} users={len(self.user_memories)} vocab={len(self.inverted_index)} global_stops={len(self._global_stops)}")
             return True
         return False
     async def search_async(self,query,k=32,user_id=None,dedup_threshold=0.95):

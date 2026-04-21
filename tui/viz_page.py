@@ -4,18 +4,20 @@ from typing import Optional, List, Tuple
 from collections import defaultdict
 import numpy as np
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.events import Click
-from textual.widgets import Label, Button, Select, Static, Checkbox
+from textual.widgets import Button, Select, Static, Checkbox
+from textual.worker import get_current_worker
 
 from rich.text import Text as RichText
 
 from tui.shared import (
     VizNode, get_bot_caches, load_memory_cache,
-    build_tfidf_vectors, reduce_dimensions, find_connections,
+    build_tfidf_vectors, reduce_dimensions_sparse, find_connections,
+    save_viz_cache, load_viz_cache,
     _draw_line, tokenize,
 )
 
@@ -53,15 +55,28 @@ class VizPage(Vertical):
         self.view_cy: float = 0.0
         self._grid_w: int = 80
         self._grid_h: int = 40
+        # cached bounds — set once in _finish_viz, read on every render/pan
+        self._data_min_x: float = 0.0
+        self._data_max_x: float = 1.0
+        self._data_min_y: float = 0.0
+        self._data_max_y: float = 1.0
+        self._dr_x: float = 1.0
+        self._dr_y: float = 1.0
+        # O(1) lookup structures rebuilt after each load
+        self._mid_to_node_idx: dict = {}     # mid → index in self.nodes
+        self._conn_cache: dict = {}          # mid → find_connections() result
+        self._visible_mids: set = set()      # mids currently in view (respects user scope)
+        # flat numpy coord arrays for vectorized grid projection
+        self._node_xs: "np.ndarray" = np.empty(0, dtype=np.float32)
+        self._node_ys: "np.ndarray" = np.empty(0, dtype=np.float32)
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
             Select([], id="viz-bot-select", prompt="select bot"),
             Select([], id="viz-user-select", prompt="all users"),
-            Checkbox("Global (all users)", id="viz-global"),
             Select([("PCA", "pca"), ("UMAP", "umap")], id="viz-method", value="pca"),
             Checkbox("Extended", id="viz-extended"),
-            Button("Load", id="viz-load-btn"),
+            Button("Reload", id="viz-load-btn"),
             Button("Refresh", id="viz-refresh-btn"),
             id="viz-controls",
         )
@@ -79,7 +94,7 @@ class VizPage(Vertical):
                 ),
                 Static("[bold]Connections[/bold]", id="viz-conn-header"),
                 ScrollableContainer(
-                    Vertical(id="viz-connections"),
+                    Static("", id="viz-connections"),
                     id="viz-conn-scroll",
                 ),
                 id="viz-detail-panel",
@@ -106,10 +121,20 @@ class VizPage(Vertical):
     def on_method_change(self, event: Select.Changed):
         if event.value and event.value != Select.BLANK:
             self.method = event.value
+            if self.cache:
+                self._generate_viz()
 
-    @on(Checkbox.Changed, "#viz-global")
-    def on_global_change(self, event: Checkbox.Changed):
-        self.query_one("#viz-user-select", Select).disabled = event.value
+    @on(Select.Changed, "#viz-bot-select")
+    def on_bot_changed(self, event: Select.Changed):
+        if not event.value or event.value == Select.BLANK:
+            return
+        self._load_bot(event.value)
+
+    @on(Select.Changed, "#viz-user-select")
+    def on_user_changed(self, event: Select.Changed):
+        if self.cache:
+            self._conn_cache = {}  # scope changed — cached connections are stale
+            self._generate_viz()
 
     @on(Checkbox.Changed, "#viz-extended")
     def on_extended_change(self, event: Checkbox.Changed):
@@ -119,88 +144,169 @@ class VizPage(Vertical):
 
     @on(Button.Pressed, "#viz-load-btn")
     def on_load(self):
+        """Force reload from disk — useful if memories changed while TUI is open."""
         sel = self.query_one("#viz-bot-select", Select)
         if not sel.value or sel.value == Select.BLANK:
             return
-        self.loaded_bot = sel.value
-        self.cache = load_memory_cache(sel.value)
-        if not self.cache:
-            self.query_one("#viz-status", Static).update("[bold]failed to load[/bold]")
-            return
-        self._refresh_user_list()
-        self._generate_viz()
+        self._load_bot(sel.value)
 
     @on(Button.Pressed, "#viz-refresh-btn")
     def on_refresh(self):
         if self.cache:
             self._generate_viz()
 
+    def _load_bot(self, bot_name: str):
+        """Load cache for bot_name, rebuild user list, and generate viz."""
+        self.loaded_bot = bot_name
+        self.cache = load_memory_cache(bot_name)
+        if not self.cache:
+            self.query_one("#viz-status", Static).update("[bold]failed to load[/bold]")
+            return
+        self._refresh_user_list()
+        self._generate_viz()
+
+    def _set_status(self, msg: str) -> None:
+        """Thread-safe status update (safe to call via call_from_thread)."""
+        self.query_one("#viz-status", Static).update(msg)
+
     def _generate_viz(self):
         if not self.cache:
             return
 
-        memories = self.cache.get("memories", [])
+        memories  = self.cache.get("memories", [])
         user_mems = self.cache.get("user_memories", {})
 
-        is_global = self.query_one("#viz-global", Checkbox).value
         user_sel = self.query_one("#viz-user-select", Select)
-        user_id = None if is_global or not user_sel.value or user_sel.value == Select.BLANK else user_sel.value
+        user_id  = (
+            None
+            if not user_sel.value or user_sel.value == Select.BLANK
+            else user_sel.value
+        )
 
         if user_id:
-            memory_ids = [mid for mid in user_mems.get(user_id, [])
-                         if mid < len(memories) and memories[mid] is not None]
+            memory_ids = [
+                mid for mid in user_mems.get(user_id, [])
+                if mid < len(memories) and memories[mid] is not None
+            ]
         else:
             memory_ids = [i for i, m in enumerate(memories) if m is not None]
 
         if not memory_ids:
-            self.query_one("#viz-status", Static).update("[dim]no memories to visualize[/dim]")
+            self._set_status("[dim]no memories to visualize[/dim]")
             self.nodes = []
             self._render_canvas()
             return
 
-        max_nodes = 16000
-        if len(memory_ids) > max_nodes:
-            memory_ids = memory_ids[:max_nodes]
-            self.query_one("#viz-status", Static).update(
-                f"[bold]showing {max_nodes} (limited)[/bold]"
-            )
-        else:
-            self.query_one("#viz-status", Static).update(
-                f"visualizing {len(memory_ids)} memories"
-            )
+        method = self.method  # snapshot before entering thread
+        self._set_status(
+            f"[yellow]starting… {len(memory_ids):,} memories[/yellow]"
+        )
+        self._build_viz_worker(method, memory_ids, user_mems, memories)
 
-        vectors, terms, raw_mags = build_tfidf_vectors(self.cache, memory_ids)
-        coords = reduce_dimensions(vectors, self.method)
+    @work(thread=True, exclusive=True, name="build_viz")
+    def _build_viz_worker(
+        self,
+        method: str,
+        memory_ids: List[int],
+        user_mems: dict,
+        memories: list,
+    ) -> None:
+        """Background thread: build TF-IDF, reduce, cache, then hand off to UI."""
+        worker = get_current_worker()
 
-        centroid = np.mean(coords, axis=0)
-        distances = np.linalg.norm(coords - centroid, axis=1)
-        max_dist = distances.max() if distances.max() > 0 else 1
+        # ── cache hit ─────────────────────────────────────────────────────────
+        cached = load_viz_cache(self.loaded_bot, method, memory_ids)
+        if cached is not None:
+            coords, raw_mags = cached
+            self.app.call_from_thread(
+                self._finish_viz, method, memory_ids, coords, raw_mags, user_mems, memories, True
+            )
+            return
+
+        # ── build sparse TF-IDF ───────────────────────────────────────────────
+        n = len(memory_ids)
+        self.app.call_from_thread(
+            self._set_status,
+            f"[yellow]building sparse TF-IDF… {n:,} memories × full vocab[/yellow]",
+        )
+        if worker.is_cancelled:
+            return
+
+        sparse, _terms, raw_mags = build_tfidf_vectors(self.cache, memory_ids)
+
+        # ── dimensionality reduction ──────────────────────────────────────────
+        self.app.call_from_thread(
+            self._set_status,
+            f"[yellow]reducing dimensions ({method})…[/yellow]",
+        )
+        if worker.is_cancelled:
+            return
+
+        coords = reduce_dimensions_sparse(sparse, method)
+
+        # ── persist to disk ───────────────────────────────────────────────────
+        save_viz_cache(self.loaded_bot, method, memory_ids, coords, raw_mags)
+
+        self.app.call_from_thread(
+            self._finish_viz, method, memory_ids, coords, raw_mags, user_mems, memories, False
+        )
+
+    def _finish_viz(
+        self,
+        method: str,
+        memory_ids: List[int],
+        coords: np.ndarray,
+        raw_mags: np.ndarray,
+        user_mems: dict,
+        memories: list,
+        from_cache: bool,
+    ) -> None:
+        """Called on the main thread once coords are ready."""
+        centroid   = np.mean(coords, axis=0)
+        distances  = np.linalg.norm(coords - centroid, axis=1)
+        max_dist   = distances.max() if distances.max() > 0 else 1
         dist_scores = distances / max_dist
 
-        max_mag = raw_mags.max() if raw_mags.max() > 0 else 1
+        max_mag   = raw_mags.max() if raw_mags.max() > 0 else 1
         mag_scores = raw_mags / max_mag
+        scores     = 0.5 * dist_scores + 0.5 * mag_scores
 
-        scores = 0.5 * dist_scores + 0.5 * mag_scores
+        # precompute mid → user_id reverse map once
+        mid_to_uid = {mid: u for u, mids in user_mems.items() for mid in mids}
 
         self.nodes = []
         for i, mid in enumerate(memory_ids):
-            uid = next((u for u, mids in user_mems.items() if mid in mids), None)
             text = memories[mid] if mid < len(memories) else ""
             self.nodes.append(VizNode(
-                mid=mid, x=coords[i, 0], y=coords[i, 1],
-                text=text, user_id=uid, score=scores[i],
+                mid=mid, x=float(coords[i, 0]), y=float(coords[i, 1]),
+                text=text, user_id=mid_to_uid.get(mid), score=float(scores[i]),
             ))
 
-        self.selected_idx = 0 if self.nodes else -1
-        self.connections = []
-        self.zoom = 1
+        self.selected_idx  = 0 if self.nodes else -1
+        self.connections   = []
+        self.zoom          = 1
+        self._conn_cache   = {}  # invalidate on new load
+        self._visible_mids = set(memory_ids)
         if self.nodes:
-            self.view_cx = float(np.mean([n.x for n in self.nodes]))
-            self.view_cy = float(np.mean([n.y for n in self.nodes]))
-        self._render_canvas()
+            self._node_xs = coords[:, 0].astype(np.float32)
+            self._node_ys = coords[:, 1].astype(np.float32)
+            self._data_min_x = float(self._node_xs.min())
+            self._data_max_x = float(self._node_xs.max())
+            self._data_min_y = float(self._node_ys.min())
+            self._data_max_y = float(self._node_ys.max())
+            self._dr_x = max(self._data_max_x - self._data_min_x, 0.001)
+            self._dr_y = max(self._data_max_y - self._data_min_y, 0.001)
+            self.view_cx = float(self._node_xs.mean())
+            self.view_cy = float(self._node_ys.mean())
+        # O(1) mid lookup for connection line drawing
+        self._mid_to_node_idx = {node.mid: i for i, node in enumerate(self.nodes)}
 
+        cache_tag = " [dim](cached)[/dim]" if from_cache else ""
+        self._set_status(f"visualizing {len(self.nodes):,} memories{cache_tag}")
         if self.nodes:
-            self._show_node_details(self.nodes[0])
+            self._show_node_details(self.nodes[0])  # calls _render_canvas internally
+        else:
+            self._render_canvas()
 
     def _render_canvas(self):
         content = self.query_one("#viz-content", Static)
@@ -219,12 +325,10 @@ class VizPage(Vertical):
         self._grid_w = grid_w
         self._grid_h = grid_h
 
-        xs = [n.x for n in self.nodes]
-        ys = [n.y for n in self.nodes]
-        data_min_x, data_max_x = min(xs), max(xs)
-        data_min_y, data_max_y = min(ys), max(ys)
-        data_range_x = max(data_max_x - data_min_x, 0.001)
-        data_range_y = max(data_max_y - data_min_y, 0.001)
+        data_min_x, data_max_x = self._data_min_x, self._data_max_x
+        data_min_y, data_max_y = self._data_min_y, self._data_max_y
+        data_range_x = self._dr_x
+        data_range_y = self._dr_y
 
         view_range_x = data_range_x / self.zoom
         view_range_y = data_range_y / self.zoom
@@ -235,9 +339,9 @@ class VizPage(Vertical):
         view_min_y = self.view_cy - view_range_y / 2
 
         pad = 1
-        for node in self.nodes:
-            gx = int((node.x - view_min_x) / view_range_x * (grid_w - pad * 2)) + pad
-            gy = int((node.y - view_min_y) / view_range_y * (grid_h - pad * 2)) + pad
+        gxs = (((self._node_xs - view_min_x) / view_range_x) * (grid_w - pad * 2) + pad).astype(np.int32)
+        gys = (((self._node_ys - view_min_y) / view_range_y) * (grid_h - pad * 2) + pad).astype(np.int32)
+        for node, gx, gy in zip(self.nodes, gxs.tolist(), gys.tolist()):
             node.grid_x = gx
             node.grid_y = gy
 
@@ -250,7 +354,8 @@ class VizPage(Vertical):
                 visible.append((i, node))
                 node_set.add((node.grid_x, node.grid_y))
 
-        if len(visible) < 5000:
+        density_limit = min(800, grid_w * grid_h // 4)
+        if len(visible) < density_limit:
             density = defaultdict(int)
             for _, node in visible:
                 for ddx in range(-3, 4):
@@ -272,11 +377,11 @@ class VizPage(Vertical):
         if self.selected_idx >= 0 and self.connections:
             sel = self.nodes[self.selected_idx]
             for conn_mid in self.connections:
-                for node in self.nodes:
-                    if node.mid == conn_mid:
-                        _draw_line(grid, sel.grid_x, sel.grid_y,
-                                   node.grid_x, node.grid_y, grid_w, grid_h)
-                        break
+                idx = self._mid_to_node_idx.get(conn_mid, -1)
+                if idx >= 0:
+                    node = self.nodes[idx]
+                    _draw_line(grid, sel.grid_x, sel.grid_y,
+                               node.grid_x, node.grid_y, grid_w, grid_h)
 
         for i, node in visible:
             gx, gy = node.grid_x, node.grid_y
@@ -317,9 +422,7 @@ class VizPage(Vertical):
     def _data_ranges(self) -> Tuple[float, float]:
         if not self.nodes:
             return (1.0, 1.0)
-        xs = [n.x for n in self.nodes]
-        ys = [n.y for n in self.nodes]
-        return (max(max(xs) - min(xs), 0.001), max(max(ys) - min(ys), 0.001))
+        return (self._dr_x, self._dr_y)
 
     def _find_nearest(self, dx: int, dy: int):
         if not self.nodes or self.selected_idx < 0:
@@ -343,8 +446,7 @@ class VizPage(Vertical):
         if best_idx >= 0:
             self.selected_idx = best_idx
             self._center_on_selected()
-            self._render_canvas()
-            self._show_node_details(self.nodes[best_idx])
+            self._show_node_details(self.nodes[best_idx])  # calls _render_canvas internally
 
     def action_move_up(self):
         self._find_nearest(0, -1)
@@ -426,8 +528,7 @@ class VizPage(Vertical):
         if best_idx >= 0 and best_dist <= max_dist:
             self.selected_idx = best_idx
             self._center_on_selected()
-            self._render_canvas()
-            self._show_node_details(self.nodes[best_idx])
+            self._show_node_details(self.nodes[best_idx])  # calls _render_canvas internally
 
     def on_mouse_scroll_up(self, event) -> None:
         """Zoom in on mouse scroll up over canvas."""
@@ -469,21 +570,28 @@ class VizPage(Vertical):
         self.query_one("#viz-detail-content", Static).update(header)
 
         top_k = 16 if self.extended_neighbors else 6
-        connections = find_connections(self.cache, node.mid, top_k=top_k)
+        cache_key = (node.mid, top_k)
+        if cache_key not in self._conn_cache:
+            self._conn_cache[cache_key] = find_connections(
+                self.cache, node.mid, top_k=top_k,
+                valid_mids=self._visible_mids if self._visible_mids else None,
+            )
+        connections = self._conn_cache[cache_key]
         self.connections = [c[0] for c in connections]
         self._render_canvas()
 
-        conn_container = self.query_one("#viz-connections", Vertical)
-        conn_container.remove_children()
-
         memories = self.cache.get("memories", [])
-        for conn_mid, score, terms in connections:
-            conn_text = memories[conn_mid] if conn_mid < len(memories) else ""
-            conn_container.mount(
-                Vertical(
-                    Label(RichText.from_markup(f"[bold]#{conn_mid}[/bold] [dim]sim={score:.2f}[/dim]")),
-                    Label(RichText.from_markup(f"[dim]shared: {', '.join(terms)}[/dim]")),
-                    Static(RichText(conn_text)),
-                    classes="viz-conn-item",
-                )
-            )
+        panel = RichText()
+        for i, (conn_mid, score, terms) in enumerate(connections):
+            if i > 0:
+                panel.append("─" * 38 + "\n", style="dim")
+            panel.append(f"#{conn_mid}", style="bold")
+            panel.append(f" sim={score:.2f}\n", style="dim")
+            panel.append(f"shared: {', '.join(terms)}\n", style="dim")
+            raw = memories[conn_mid] if conn_mid < len(memories) else ""
+            if len(raw) > 400:
+                raw = raw[:400] + "…"
+            panel.append(raw + "\n")
+        self.query_one("#viz-connections", Static).update(
+            panel if connections else RichText("no connections", style="dim")
+        )

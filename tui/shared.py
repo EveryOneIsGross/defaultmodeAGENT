@@ -1,9 +1,9 @@
 """Shared models, globals, and utility functions for the TUI."""
 
-import os, sys, io, re, math, string, pickle, subprocess, contextlib
+import os, sys, io, re, math, string, pickle, subprocess, contextlib, hashlib, json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 from collections import defaultdict
 import numpy as np
 
@@ -493,79 +493,161 @@ class VizNode:
     grid_y: int = 0
 
 
-def build_tfidf_vectors(cache: dict, memory_ids: List[int]) -> Tuple[np.ndarray, List[str], np.ndarray]:
-    """Build TF-IDF vectors for given memory IDs."""
-    memories = cache.get("memories", [])
-    inv_idx = cache.get("inverted_index", {})
+_SVD_COMPONENTS = 50  # latent dims before final PCA — captures global structure
 
-    all_terms = sorted(inv_idx.keys())
-    if not all_terms or not memory_ids:
-        return np.zeros((len(memory_ids), 1)), [], np.zeros(len(memory_ids))
 
+def build_tfidf_vectors(cache: dict, memory_ids: List[int]) -> Tuple[Any, List[str], np.ndarray]:
+    """Build a sparse L2-normalised float32 TF-IDF matrix for the given memory IDs."""
+    from scipy.sparse import csr_matrix, diags  # lazy — only loaded when viz is used
+
+    memories = cache["memories"]
+    inv_idx  = cache["inverted_index"]
+
+    all_terms   = sorted(inv_idx.keys())
     term_to_idx = {t: i for i, t in enumerate(all_terms)}
-    total_docs = len([m for m in memories if m is not None])
+    total_docs  = sum(1 for m in memories if m is not None)
 
-    doc_freqs = {t: len(set(inv_idx.get(t, []))) for t in all_terms}
+    idf_map = {
+        t: math.log((total_docs + 1) / (len(set(postings)) + 1)) + 1
+        for t, postings in inv_idx.items()
+    }
 
-    vectors = np.zeros((len(memory_ids), len(all_terms)))
-
+    rows, cols, vals = [], [], []
     for row, mid in enumerate(memory_ids):
         if mid >= len(memories) or memories[mid] is None:
             continue
-        toks = tokenize(memories[mid])
-        term_counts = defaultdict(int)
-        for t in toks:
-            term_counts[t] += 1
-        for term, count in term_counts.items():
-            if term in term_to_idx:
-                col = term_to_idx[term]
-                tf = count
-                df = doc_freqs.get(term, 1)
-                idf = math.log((total_docs + 1) / (df + 1)) + 1
-                vectors[row, col] = tf * idf
+        tc: dict[str, int] = defaultdict(int)
+        for t in tokenize(memories[mid]):
+            tc[t] += 1
+        for t, count in tc.items():
+            if t in term_to_idx:
+                rows.append(row)
+                cols.append(term_to_idx[t])
+                vals.append(float(count) * idf_map[t])
 
-    raw_magnitudes = np.linalg.norm(vectors, axis=1)
+    sparse = csr_matrix(
+        (vals, (rows, cols)),
+        shape=(len(memory_ids), len(all_terms)),
+        dtype=np.float32,
+    )
 
+    raw_magnitudes = np.sqrt(np.asarray(sparse.power(2).sum(axis=1)).ravel())
     norms = raw_magnitudes.copy()
-    norms[norms == 0] = 1
-    vectors = vectors / norms[:, np.newaxis]
+    norms[norms == 0] = 1.0
+    sparse = diags(1.0 / norms.astype(np.float32)) @ sparse
 
-    return vectors, all_terms, raw_magnitudes
+    return sparse, all_terms, raw_magnitudes
 
 
-def reduce_dimensions(vectors: np.ndarray, method: str = "pca") -> np.ndarray:
-    """Reduce vectors to 2D using UMAP or PCA."""
-    if vectors.shape[0] < 2:
-        return np.zeros((vectors.shape[0], 2))
+def reduce_dimensions_sparse(sparse: Any, method: str = "pca") -> np.ndarray:
+    """Reduce a sparse L2-normalised TF-IDF matrix to 2-D coordinates.
+
+    Pipeline:
+      TruncatedSVD(50)  — sparse-native, finds global structure across full vocab
+      PCA(2) / UMAP(2)  — properly centered 2-D projection of those 50 dense dims
+    """
+    from sklearn.decomposition import TruncatedSVD, PCA  # lazy
+    from sklearn.preprocessing import StandardScaler      # lazy
+
+    n_samples = sparse.shape[0]
+    if n_samples < 2:
+        return np.zeros((n_samples, 2))
+
+    n_svd = min(_SVD_COMPONENTS, n_samples - 1, sparse.shape[1] - 1)
+    reduced = TruncatedSVD(n_components=n_svd, random_state=42).fit_transform(sparse)
+
+    # Equalise SVD component contributions before final projection.
+    # Without this, the first singular vector dominates and PCA/UMAP collapses
+    # everything onto a single axis.
+    reduced = StandardScaler().fit_transform(reduced)
 
     if method == "umap":
-        try:
-            import umap
-            reducer = umap.UMAP(n_components=2, n_neighbors=min(15, vectors.shape[0] - 1),
-                               min_dist=0.1, random_state=42)
-            return reducer.fit_transform(vectors)
-        except ImportError:
-            method = "pca"
+        import umap as _umap  # lazy — numba JIT only triggered on first viz with UMAP
+        return _umap.UMAP(
+            n_components=2,
+            n_neighbors=min(15, n_samples - 1),
+            min_dist=0.1,
+            random_state=42,
+        ).fit_transform(reduced)
 
-    if method == "pca":
-        try:
-            from sklearn.decomposition import PCA
-            n_components = min(2, vectors.shape[0], vectors.shape[1])
-            pca = PCA(n_components=n_components)
-            result = pca.fit_transform(vectors)
-            if result.shape[1] < 2:
-                result = np.column_stack([result, np.zeros(result.shape[0])])
-            return result
-        except ImportError:
-            pass
-
-    np.random.seed(42)
-    proj = np.random.randn(vectors.shape[1], 2)
-    return vectors @ proj
+    return PCA(n_components=2, random_state=42).fit_transform(reduced)
 
 
-def find_connections(cache: dict, mid: int, top_k: int = 5) -> List[Tuple[int, float, List[str]]]:
-    """Find memories connected to the given memory by shared keywords."""
+def reduce_dimensions(vectors: Any, method: str = "pca") -> np.ndarray:
+    return reduce_dimensions_sparse(vectors, method)
+
+
+# ─── Viz coord cache ──────────────────────────────────────────────────────────
+
+def _viz_cache_dir(bot_name: str) -> Path:
+    return PATHS.cache_dir / bot_name / "viz_cache"
+
+
+def _viz_fingerprint(bot_name: str, method: str, memory_ids: List[int]) -> str:
+    """Fast, stable fingerprint for a (bot, method, memory_id_set) triple."""
+    ids_bytes = np.array(sorted(memory_ids), dtype=np.int32).tobytes()
+    ids_hash  = hashlib.md5(ids_bytes).hexdigest()[:10]
+    key = f"{bot_name}:{method}:{len(memory_ids)}:{ids_hash}"
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def save_viz_cache(
+    bot_name: str,
+    method: str,
+    memory_ids: List[int],
+    coords: np.ndarray,
+    mags: np.ndarray,
+) -> bool:
+    """Persist 2-D coords + magnitudes to a compressed .npz file."""
+    try:
+        cache_dir = _viz_cache_dir(bot_name)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        fp = _viz_fingerprint(bot_name, method, memory_ids)
+        np.savez_compressed(
+            str(cache_dir / f"{fp}.npz"),
+            coords=coords.astype(np.float32),
+            mags=mags.astype(np.float32),
+            memory_ids=np.array(memory_ids, dtype=np.int32),
+        )
+        (cache_dir / f"{fp}.meta.json").write_text(
+            json.dumps({"bot": bot_name, "method": method, "n": len(memory_ids), "fp": fp}),
+            encoding="utf-8",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def load_viz_cache(
+    bot_name: str,
+    method: str,
+    memory_ids: List[int],
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Load cached (coords, mags) if a valid file exists, else return None."""
+    try:
+        fp      = _viz_fingerprint(bot_name, method, memory_ids)
+        npz_path = _viz_cache_dir(bot_name) / f"{fp}.npz"
+        if not npz_path.exists():
+            return None
+        data = np.load(str(npz_path))
+        if data["memory_ids"].tolist() != memory_ids:
+            return None
+        return data["coords"], data["mags"]
+    except Exception:
+        return None
+
+
+def find_connections(
+    cache: dict,
+    mid: int,
+    top_k: int = 5,
+    valid_mids: Optional[set] = None,
+) -> List[Tuple[int, float, List[str]]]:
+    """Find memories connected to the given memory by shared keywords.
+
+    If valid_mids is provided, only connections to memories in that set are
+    returned — used to isolate results to the currently visible user scope.
+    """
     memories = cache.get("memories", [])
     inv_idx = cache.get("inverted_index", {})
 
@@ -578,9 +660,14 @@ def find_connections(cache: dict, mid: int, top_k: int = 5) -> List[Tuple[int, f
     for term in source_toks:
         if term in inv_idx:
             for other_mid in inv_idx[term]:
-                if other_mid != mid and other_mid < len(memories) and memories[other_mid] is not None:
-                    connections[other_mid]["score"] += 1
-                    connections[other_mid]["terms"].append(term)
+                if other_mid == mid:
+                    continue
+                if other_mid >= len(memories) or memories[other_mid] is None:
+                    continue
+                if valid_mids is not None and other_mid not in valid_mids:
+                    continue
+                connections[other_mid]["score"] += 1
+                connections[other_mid]["terms"].append(term)
 
     for other_mid in connections:
         other_toks = set(tokenize(memories[other_mid]))

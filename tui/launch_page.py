@@ -92,6 +92,9 @@ class LaunchPage(Vertical):
         self._populate_bots()
         self._populate_apis()
         self._populate_dmn_apis()
+        self.query_one("#dmn-model-list", ListView).append(
+            SelectableItem("chronpression", "chronpression", "no LLM required", True)
+        )
 
     def _populate_bots(self):
         lv = self.query_one("#bot-list", ListView)
@@ -137,6 +140,7 @@ class LaunchPage(Vertical):
         d = get_default_model(api)
         if target == "#dmn-model-list":
             lv.append(SelectableItem("(same)", "", "use main model", True))
+            lv.append(SelectableItem("chronpression", "chronpression", "no LLM required", True))
         for m in models:
             lv.append(SelectableItem(m, m, "(default)" if m == d else "", True))
 
@@ -245,10 +249,13 @@ class LaunchPage(Vertical):
         cmd = [sys.executable, str(PATHS.discord_bot), "--api", instance.api, "--bot-name", instance.bot_name]
         if instance.model and instance.model != get_default_model(instance.api):
             cmd.extend(["--model", instance.model])
-        if instance.dmn_api:
-            cmd.extend(["--dmn-api", instance.dmn_api])
-        if instance.dmn_model:
-            cmd.extend(["--dmn-model", instance.dmn_model])
+        if instance.dmn_model == "chronpression":
+            cmd.append("--use-chronpression")
+        else:
+            if instance.dmn_api:
+                cmd.extend(["--dmn-api", instance.dmn_api])
+            if instance.dmn_model:
+                cmd.extend(["--dmn-model", instance.dmn_model])
 
         log.write(f"[bold]$ {' '.join(cmd)}[/bold]\n")
 
